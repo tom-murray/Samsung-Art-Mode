@@ -35,7 +35,7 @@ Want to know about the Home Assistant Automation? I have a calendar within Home 
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/yourusername/samsung-art-mode.git
+git clone https://github.com/tom-murray/Samsung-Art-Mode.git
 cd samsung-art-mode
 ```
 
@@ -119,6 +119,6 @@ This project leverages several open-source tools and libraries. Special thanks t
 - **[Requests](https://docs.python-requests.org/)**: A simple and elegant HTTP library for Python, making HTTP requests much easier to work with.
 - **[samsungtvws](https://github.com/xchwarze/samsung-tv-ws-api)**: A Python library that provides a WebSocket-based API to interact with Samsung Smart TVs, making it possible to control the TV and manage art mode.
 
-## License
+## License
 
 Feel free to take my code and amend as you desire.
