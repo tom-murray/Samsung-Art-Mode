@@ -1,0 +1,17 @@
+version: "3.8"
+
+services:
+  samsung-art-mode-api:
+    image: samsung-art-mode-api:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "5001:5000"
+    networks:
+      - iot_vlan_network
+    restart: unless-stopped
+
+networks:
+  iot_vlan_network:
+    external: true
