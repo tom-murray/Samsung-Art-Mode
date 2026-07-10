@@ -1,73 +1,70 @@
-from flask import Flask, request, jsonify
 import logging
-import requests
-from samsungtvws import SamsungTVWS
-from PIL import Image, ImageOps
-from io import BytesIO
 import os
 
+from flask import Flask, jsonify, request
+
+import tvcontrol
+import unsplash
+
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 
-# Increase debug level
-logging.basicConfig(level=logging.DEBUG)
 
-@app.route('/tvs/<tv_ip>/art-mode', methods=['POST'])
-def set_art_mode(tv_ip):
-    data = request.get_json()
+@app.get("/health")
+def health():
+    return jsonify(status="ok"), 200
 
-    if not data or 'access_key' not in data or 'keywords' not in data:
-        return jsonify({"error": "Missing required parameters: access_key and keywords"}), 400
 
-    access_key = data['access_key']
-    keywords = data['keywords']
+@app.get("/tvs/<tv_ip>/diagnose")
+def diagnose(tv_ip):
+    return jsonify(tvcontrol.diagnose(tv_ip)), 200
+
+
+@app.get("/tvs/<tv_ip>/state")
+def state(tv_ip):
+    return jsonify(tvcontrol.state(tv_ip)), 200
+
+
+@app.post("/tvs/<tv_ip>/wake")
+def wake(tv_ip):
+    data = request.get_json(silent=True) or {}
+    result = tvcontrol.ensure_awake(tv_ip, mac=data.get("mac"))
+    return jsonify(result), 200
+
+
+@app.post("/tvs/<tv_ip>/pair")
+def pair(tv_ip):
+    data = request.get_json(silent=True) or {}
+    result = tvcontrol.pair(tv_ip, mac=data.get("mac"))
+    return jsonify(result), (200 if result["paired"] else 504)
+
+
+@app.post("/tvs/<tv_ip>/art-mode")
+def art_mode(tv_ip):
+    data = request.get_json(silent=True) or {}
+    keywords = data.get("keywords")
+    access_key = data.get("access_key") or os.environ.get("UNSPLASH_ACCESS_KEY")
+
+    if not keywords:
+        return jsonify(error="Missing required parameter: keywords"), 400
+    if not access_key:
+        return jsonify(error="Missing Unsplash access_key (body or UNSPLASH_ACCESS_KEY env)"), 400
 
     try:
-        # Convert the comma-separated list of keywords into a query string
-        query = ','.join([kw.strip() for kw in keywords.split(',')])
+        image = unsplash.fetch_art_image(access_key, keywords)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    except unsplash.UnsplashError as e:
+        return jsonify(error=str(e)), 502
 
-        # Set up the Unsplash API headers
-        headers = {'Authorization': f'Client-ID {access_key}'}
+    try:
+        result = tvcontrol.apply_art(tv_ip, image, mac=data.get("mac"))
+    except Exception as e:  # noqa: BLE001
+        logging.exception("art-mode failed for %s", tv_ip)
+        return jsonify(error=str(e)), 500
 
-        # Call Unsplash API to get a random image based on the keywords
-        image_query = requests.get(f"https://api.unsplash.com/photos/random?orientation=landscape&query={query}", headers=headers)
-        image_data = image_query.json()
-        image_url = image_data['urls']['full'] + "&w=3840&h=2160"
+    return jsonify(status="success", message=f"Art updated from keywords: {keywords}", **result), 200
 
-        # Download the image
-        response = requests.get(image_url)
-        img = Image.open(BytesIO(response.content))
 
-        # Resize the image while maintaining aspect ratio
-        target_size = (3840, 2160)  # Target size for the TV
-        img = ImageOps.fit(img, target_size, Image.LANCZOS)
-
-        # Save the image
-        img_path = 'bg.jpg'
-        img.save(img_path, optimize=True, quality=100)
-
-        # Initialize SamsungTVWS
-        token_file = os.path.dirname(os.path.realpath(__file__)) + '/tv-token.txt'
-        tv = SamsungTVWS(host=tv_ip, port=8002, token_file=token_file)
-
-        # Get current image
-        current_img = tv.art().get_current()
-
-        # Upload new image
-        with open(img_path, 'rb') as file:
-            img_data = file.read()
-            uploadedID = tv.art().upload(img_data, file_type="JPEG", matte='none')
-
-        # Select the new image as the active one
-        tv.art().select_image(uploadedID)
-
-        # Delete old image
-        tv.art().delete(current_img['content_id'])
-
-        return jsonify({"status": "success", "message": f"Art mode image updated with a new image based on keywords: {keywords}."}), 200
-
-    except Exception as e:
-        logging.error(f"Error occurred: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)

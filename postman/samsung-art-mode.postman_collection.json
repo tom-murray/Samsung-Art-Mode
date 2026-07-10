@@ -1,0 +1,42 @@
+{
+  "info": {
+    "name": "Samsung Art Mode API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://192.0.2.10:5000" },
+    { "key": "tv_ip", "value": "192.0.2.90" },
+    { "key": "unsplash_key", "value": "" },
+    { "key": "keywords", "value": "Dubai,cityscape" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": { "method": "GET", "url": "{{base_url}}/health" }
+    },
+    {
+      "name": "Diagnose",
+      "request": { "method": "GET", "url": "{{base_url}}/tvs/{{tv_ip}}/diagnose" }
+    },
+    {
+      "name": "State",
+      "request": { "method": "GET", "url": "{{base_url}}/tvs/{{tv_ip}}/state" }
+    },
+    {
+      "name": "Pair",
+      "request": { "method": "POST", "url": "{{base_url}}/tvs/{{tv_ip}}/pair" }
+    },
+    {
+      "name": "Set Art Mode",
+      "request": {
+        "method": "POST",
+        "header": [ { "key": "Content-Type", "value": "application/json" } ],
+        "url": "{{base_url}}/tvs/{{tv_ip}}/art-mode",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"access_key\": \"{{unsplash_key}}\",\n  \"keywords\": \"{{keywords}}\"\n}"
+        }
+      }
+    }
+  ]
+}

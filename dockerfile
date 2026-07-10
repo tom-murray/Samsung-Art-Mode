@@ -16,5 +16,10 @@ EXPOSE 5000
 # Define environment variable
 ENV FLASK_APP=app.py
 
-# Run app.py when the container launches
-CMD ["flask", "run", "--host=0.0.0.0"]
+# Per-TV auth tokens live here; mount a volume so they survive rebuilds
+ENV TOKEN_DIR=/data/tokens
+
+# Run under gunicorn with the threaded worker so one slow TV call doesn't block
+# other requests (the default sync worker ignores --threads). --timeout 180 is a
+# backstop that recycles a worker if a call ever hangs past our own per-call caps.
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--worker-class", "gthread", "--workers", "2", "--threads", "8", "--timeout", "180", "app:app"]
