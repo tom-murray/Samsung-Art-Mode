@@ -32,42 +32,6 @@ class _Resp:
         return self._json
 
 
-def test_fetch_art_image_returns_jpeg_bytes_at_target_size():
-    meta = _Resp(200, {"urls": {"full": "https://img.example/full"}})
-    photo = _Resp(200, content=_png_bytes())
-    with patch("unsplash.requests.get", side_effect=[meta, photo]):
-        data = unsplash.fetch_art_image("key", "Dubai", size=(320, 180))
-    img = Image.open(BytesIO(data))
-    assert img.format == "JPEG"
-    assert img.size == (320, 180)
-
-
-def test_fetch_art_image_raises_on_non_200_meta():
-    with patch("unsplash.requests.get", side_effect=[_Resp(403, {})]):
-        try:
-            unsplash.fetch_art_image("key", "Dubai")
-            assert False, "expected UnsplashError"
-        except unsplash.UnsplashError:
-            pass
-
-
-def test_fetch_art_image_raises_on_missing_urls():
-    with patch("unsplash.requests.get", side_effect=[_Resp(200, {"errors": ["bad"]})]):
-        try:
-            unsplash.fetch_art_image("key", "Dubai")
-            assert False, "expected UnsplashError"
-        except unsplash.UnsplashError:
-            pass
-
-
-def test_fetch_art_image_raises_on_empty_keywords():
-    try:
-        unsplash.fetch_art_image("key", " , ")
-        assert False, "expected ValueError"
-    except ValueError:
-        pass
-
-
 def test_search_photos_returns_ranked_results():
     payload = {"results": [{"id": "a"}, {"id": "b"}]}
     with patch("unsplash.requests.get", return_value=_Resp(200, payload)):
@@ -170,3 +134,58 @@ def test_choose_photo_uses_vision_scorer_when_configured():
 def test_choose_photo_none_when_all_below_min_res():
     cands = [{"id": "x", "_rank": 0, "likes": 5, "width": 1000, "height": 600}]
     assert unsplash.choose_photo(cands, "Kyoto", rng=_FirstRng, config={"backend": "heuristic"}) is None
+
+
+def _photo(id="p1", width=5000, height=2813):
+    return {"id": id, "width": width, "height": height, "likes": 100, "_rank": 0,
+            "alt_description": "scene", "user": {"name": "Jane"},
+            "urls": {"full": "https://img.example/full"},
+            "links": {"html": "https://unsplash.com/photos/p1",
+                      "download_location": "https://api.unsplash.com/photos/p1/download"}}
+
+
+def test_fetch_art_image_uses_search_and_returns_meta():
+    search = _Resp(200, {"results": [_photo()]})
+    dl = _Resp(200, {})
+    photo = _Resp(200, content=_png_bytes())
+    with patch("unsplash.requests.get", side_effect=[search, dl, photo]):
+        data, meta = unsplash.fetch_art_image("key", "Kyoto", size=(320, 180))
+    assert Image.open(BytesIO(data)).size == (320, 180)
+    assert meta["id"] == "p1" and meta["photographer"] == "Jane"
+
+
+def test_fetch_art_image_excludes_last_shown():
+    two = _Resp(200, {"results": [_photo("p1"), _photo("p2")]})
+    dl = _Resp(200, {})
+    photo = _Resp(200, content=_png_bytes())
+    with patch("unsplash.requests.get", side_effect=[two, dl, photo]):
+        _, meta = unsplash.fetch_art_image("key", "Kyoto", size=(320, 180), exclude_id="p1", rng=_FirstRng)
+    assert meta["id"] == "p2"
+
+
+def test_fetch_art_image_falls_back_to_random_on_empty_search():
+    empty = _Resp(200, {"results": []})
+    rand = _Resp(200, _photo())
+    photo = _Resp(200, content=_png_bytes())
+    with patch("unsplash.requests.get", side_effect=[empty, rand, photo]):
+        data, meta = unsplash.fetch_art_image("key", "Kyoto", size=(320, 180))
+    assert meta["id"] == "p1"
+
+
+def test_fetch_art_image_raises_on_empty_keywords():
+    try:
+        unsplash.fetch_art_image("key", " , ")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_fetch_art_image_raises_when_search_and_random_both_fail():
+    bad_search = _Resp(500, {})
+    bad_random = _Resp(401, {})
+    with patch("unsplash.requests.get", side_effect=[bad_search, bad_random]):
+        try:
+            unsplash.fetch_art_image("key", "Kyoto")
+            assert False, "expected UnsplashError"
+        except unsplash.UnsplashError:
+            pass

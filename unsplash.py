@@ -27,11 +27,29 @@ def build_query(keywords: str) -> str:
     return ",".join(kw.strip() for kw in keywords.split(",") if kw.strip())
 
 
-def fetch_art_image(access_key: str, keywords: str, size=(3840, 2160)) -> bytes:
+def fetch_art_image(access_key: str, keywords: str, size=(3840, 2160),
+                    exclude_id=None, rng=random):
     query = build_query(keywords)
     if not query:
         raise ValueError("keywords must contain at least one non-empty term")
 
+    chosen = None
+    try:
+        candidates = search_photos(access_key, query)
+        chosen = choose_photo(candidates, query, exclude_id=exclude_id, rng=rng)
+    except UnsplashError as e:
+        log.warning("Unsplash search failed (%r); falling back to random", e)
+
+    if chosen is not None:
+        trigger_download(access_key, chosen.get("links", {}).get("download_location"))
+    else:
+        chosen = _fetch_random(access_key, query)
+
+    image = _download_and_resize(chosen["urls"]["full"], size)
+    return image, _photo_meta(chosen)
+
+
+def _fetch_random(access_key: str, query: str) -> dict:
     meta = requests.get(
         UNSPLASH_URL,
         params={"orientation": "landscape", "query": query},
@@ -41,19 +59,9 @@ def fetch_art_image(access_key: str, keywords: str, size=(3840, 2160)) -> bytes:
     if meta.status_code != 200:
         raise UnsplashError(f"Unsplash returned {meta.status_code}: {meta.text[:200]}")
     data = meta.json()
-    try:
-        image_url = data["urls"]["full"]
-    except (KeyError, TypeError):
+    if not isinstance(data, dict) or "urls" not in data:
         raise UnsplashError(f"Unexpected Unsplash response: {str(data)[:200]}")
-
-    photo = requests.get(f"{image_url}&w={size[0]}&h={size[1]}", timeout=30)
-    if photo.status_code != 200:
-        raise UnsplashError(f"Image download failed: {photo.status_code}")
-
-    img = ImageOps.fit(Image.open(BytesIO(photo.content)), size, Image.LANCZOS).convert("RGB")
-    out = BytesIO()
-    img.save(out, format="JPEG", optimize=True, quality=90)
-    return out.getvalue()
+    return data
 
 
 def search_photos(access_key: str, query: str, per_page: int = CANDIDATE_POOL) -> list:
