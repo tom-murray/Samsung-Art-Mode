@@ -95,3 +95,37 @@ def test_meets_min_rejects_low_res_and_portrait():
     assert unsplash._meets_min({"width": 5000, "height": 2813}) is True
     assert unsplash._meets_min({"width": 2000, "height": 1200}) is False
     assert unsplash._meets_min({"width": 3000, "height": 4000}) is False
+
+
+class _FirstRng:
+    """Deterministic stand-in for the random module: always the first item."""
+    @staticmethod
+    def choice(seq):
+        return seq[0]
+
+
+def _cand(id, rank, likes=100, width=5000, height=2813):
+    return {"id": id, "_rank": rank, "likes": likes, "width": width, "height": height}
+
+
+def test_select_best_picks_highest_scored():
+    cands = [_cand("a", 3, likes=1), _cand("b", 0, likes=999)]
+    chosen = unsplash.select_best(cands, rng=_FirstRng)
+    assert chosen["id"] == "b"
+
+
+def test_select_best_excludes_last_shown():
+    cands = [_cand("b", 0, likes=999), _cand("c", 1, likes=800)]
+    chosen = unsplash.select_best(cands, exclude_id="b", rng=_FirstRng)
+    assert chosen["id"] == "c"
+
+
+def test_select_best_returns_none_when_all_below_min_res():
+    cands = [{"id": "x", "_rank": 0, "likes": 5, "width": 1000, "height": 600}]
+    assert unsplash.select_best(cands, rng=_FirstRng) is None
+
+
+def test_select_best_falls_back_to_best_when_only_option_is_excluded():
+    cands = [_cand("b", 0, likes=999)]
+    chosen = unsplash.select_best(cands, exclude_id="b", rng=_FirstRng)
+    assert chosen["id"] == "b"

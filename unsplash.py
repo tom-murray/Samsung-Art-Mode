@@ -89,3 +89,13 @@ def heuristic_scorer(c: dict) -> float:
     aspect = (w / h) if h else 0
     aspect_penalty = abs(aspect - TARGET_ASPECT)
     return rank_score * 2.0 + likes_score * 0.5 - aspect_penalty * 1.0
+
+
+def select_best(candidates, exclude_id=None, scorer=heuristic_scorer, top_k=TOP_K, rng=random):
+    eligible = [c for c in (candidates or []) if _meets_min(c)]
+    if not eligible:
+        return None
+    eligible.sort(key=scorer, reverse=True)
+    top = eligible[:top_k]
+    pool = [c for c in top if c.get("id") != exclude_id] or top
+    return rng.choice(pool)
