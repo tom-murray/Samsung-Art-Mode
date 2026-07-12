@@ -66,3 +66,20 @@ def test_fetch_art_image_raises_on_empty_keywords():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+def test_search_photos_returns_ranked_results():
+    payload = {"results": [{"id": "a"}, {"id": "b"}]}
+    with patch("unsplash.requests.get", return_value=_Resp(200, payload)):
+        results = unsplash.search_photos("key", "Kyoto")
+    assert [c["id"] for c in results] == ["a", "b"]
+    assert results[0]["_rank"] == 0 and results[1]["_rank"] == 1
+
+
+def test_search_photos_raises_on_non_200():
+    with patch("unsplash.requests.get", return_value=_Resp(403, {})):
+        try:
+            unsplash.search_photos("key", "Kyoto")
+            assert False, "expected UnsplashError"
+        except unsplash.UnsplashError:
+            pass

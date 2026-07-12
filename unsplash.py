@@ -1,8 +1,19 @@
+import logging
+import math
+import random
+
 import requests
 from io import BytesIO
 from PIL import Image, ImageOps
 
+log = logging.getLogger(__name__)
+
 UNSPLASH_URL = "https://api.unsplash.com/photos/random"
+SEARCH_URL = "https://api.unsplash.com/search/photos"
+CANDIDATE_POOL = 30
+TOP_K = 5
+MIN_WIDTH = 3000
+TARGET_ASPECT = 16 / 9
 
 
 class UnsplashError(Exception):
@@ -40,3 +51,25 @@ def fetch_art_image(access_key: str, keywords: str, size=(3840, 2160)) -> bytes:
     out = BytesIO()
     img.save(out, format="JPEG", optimize=True, quality=90)
     return out.getvalue()
+
+
+def search_photos(access_key: str, query: str, per_page: int = CANDIDATE_POOL) -> list:
+    resp = requests.get(
+        SEARCH_URL,
+        params={
+            "query": query,
+            "orientation": "landscape",
+            "content_filter": "high",
+            "order_by": "relevant",
+            "per_page": per_page,
+        },
+        headers={"Authorization": f"Client-ID {access_key}"},
+        timeout=15,
+    )
+    if resp.status_code != 200:
+        raise UnsplashError(f"Unsplash search returned {resp.status_code}: {resp.text[:200]}")
+    data = resp.json()
+    results = data.get("results", []) if isinstance(data, dict) else []
+    for i, c in enumerate(results):
+        c["_rank"] = i
+    return results
