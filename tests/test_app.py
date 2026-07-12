@@ -26,13 +26,18 @@ def test_art_mode_missing_access_key_returns_400(monkeypatch):
 
 def test_art_mode_happy_path(monkeypatch):
     monkeypatch.setenv("UNSPLASH_ACCESS_KEY", "envkey")
-    with patch("app.unsplash.fetch_art_image", return_value=b"jpeg") as fetch, \
-         patch("app.tvcontrol.apply_art", return_value={"uploaded_id": "N1", "port": 8002}) as apply:
+    photo = {"id": "p1", "photographer": "Jane", "source_url": "u", "description": "d"}
+    with patch("app.tvcontrol.last_photo", return_value=None), \
+         patch("app.unsplash.fetch_art_image", return_value=(b"jpeg", photo)) as fetch, \
+         patch("app.tvcontrol.apply_art", return_value={"uploaded_id": "N1", "port": 8002}), \
+         patch("app.tvcontrol.record_photo") as record:
         resp = client().post("/tvs/1.2.3.4/art-mode", json={"keywords": "Dubai"})
     assert resp.status_code == 200
-    assert resp.get_json()["status"] == "success"
-    fetch.assert_called_once_with("envkey", "Dubai")
-    apply.assert_called_once()
+    body = resp.get_json()
+    assert body["status"] == "success"
+    assert body["photo"]["id"] == "p1"
+    fetch.assert_called_once_with("envkey", "Dubai", exclude_id=None)
+    record.assert_called_once_with("1.2.3.4", "p1")
 
 
 def test_pair_returns_504_when_not_paired():
@@ -65,7 +70,11 @@ def test_wake_returns_result():
 
 def test_art_mode_passes_mac_through(monkeypatch):
     monkeypatch.setenv("UNSPLASH_ACCESS_KEY", "envkey")
-    with patch("app.unsplash.fetch_art_image", return_value=b"jpeg"), \
-         patch("app.tvcontrol.apply_art", return_value={"uploaded_id": "N1", "port": 8002}) as apply:
+    photo = {"id": "p1", "photographer": "Jane", "source_url": "u", "description": "d"}
+    with patch("app.tvcontrol.last_photo", return_value="prev"), \
+         patch("app.unsplash.fetch_art_image", return_value=(b"jpeg", photo)) as fetch, \
+         patch("app.tvcontrol.apply_art", return_value={"uploaded_id": "N1", "port": 8002}) as apply, \
+         patch("app.tvcontrol.record_photo"):
         client().post("/tvs/1.2.3.4/art-mode", json={"keywords": "Dubai", "mac": "AA:BB:CC:DD:EE:FF"})
     assert apply.call_args.kwargs["mac"] == "AA:BB:CC:DD:EE:FF"
+    assert fetch.call_args.kwargs["exclude_id"] == "prev"

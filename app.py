@@ -50,8 +50,9 @@ def art_mode(tv_ip):
     if not access_key:
         return jsonify(error="Missing Unsplash access_key (body or UNSPLASH_ACCESS_KEY env)"), 400
 
+    exclude_id = tvcontrol.last_photo(tv_ip)
     try:
-        image = unsplash.fetch_art_image(access_key, keywords)
+        image, photo = unsplash.fetch_art_image(access_key, keywords, exclude_id=exclude_id)
     except ValueError as e:
         return jsonify(error=str(e)), 400
     except unsplash.UnsplashError as e:
@@ -63,7 +64,9 @@ def art_mode(tv_ip):
         logging.exception("art-mode failed for %s", tv_ip)
         return jsonify(error=str(e)), 500
 
-    return jsonify(status="success", message=f"Art updated from keywords: {keywords}", **result), 200
+    tvcontrol.record_photo(tv_ip, photo.get("id"))
+    return jsonify(status="success", message=f"Art updated from keywords: {keywords}",
+                   photo=photo, **result), 200
 
 
 if __name__ == "__main__":
