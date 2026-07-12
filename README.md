@@ -273,9 +273,22 @@ The API will respond with a JSON object indicating success or failure.
   "status": "success",
   "message": "Art updated from keywords: Dubai,cityscape",
   "uploaded_id": "MY-F0032",
-  "port": 8002
+  "port": 8002,
+  "photo": {
+    "id": "abc123",
+    "description": "Dubai skyline at dusk",
+    "photographer": "Jane Doe",
+    "source_url": "https://unsplash.com/photos/abc123"
+  }
 }
 ```
+
+The image is chosen by **relevance + quality** — an Unsplash *search* (landscape,
+high-resolution, `content_filter=high`) rather than a random photo, skipping the
+image shown last on that TV so it varies. The `photo` block reports which image
+was used (with photographer attribution). Optionally an on-device vision model
+re-ranks the shortlist for the best framed-art look (see
+[Environment Variables](#environment-variables)).
 
 Errors are returned with an appropriate status code and an `error` field:
 `400` (missing `keywords`/`access_key` or empty keywords), `502` (Unsplash
@@ -290,6 +303,24 @@ request failed), or `500` (uploading to the TV failed).
   WebSocket auth tokens are saved after pairing. When running in Docker,
   mount a volume at this path so tokens survive container rebuilds, e.g.
   `-v samsung-art-mode-tokens:/data/tokens`.
+
+### Vision scorer (optional)
+
+By default, images are ranked by quality heuristics (relevance, popularity,
+aspect ratio, resolution). You can optionally have a vision model re-rank the
+shortlist for the best "framed wall art" look. It works with **any
+OpenAI-compatible endpoint** (LM Studio, Ollama `/v1`, vLLM, LocalAI, OpenAI):
+
+- **`SCORER_BACKEND`** — `heuristic` (default) or `openai`.
+- **`SCORER_URL`** — the endpoint base, e.g. `http://<your-model-host>:1234/v1`.
+- **`SCORER_MODEL`** — the model name to request.
+- **`SCORER_API_KEY`** (optional) — sent as a Bearer token if set.
+- **`SCORER_TIMEOUT`** (default `30`) — per-image request timeout in seconds.
+
+With `SCORER_BACKEND=openai` and `SCORER_URL`/`SCORER_MODEL` set, each shortlisted
+candidate is scored by the model against a "framed art of `<destination>`,
+reject people/text/watermarks" rubric. If the endpoint is unset or unreachable,
+it falls back to the heuristics — art updates never fail because of the scorer.
 
 ## Diagnosing an unsupported TV
 
