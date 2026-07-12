@@ -73,3 +73,19 @@ def search_photos(access_key: str, query: str, per_page: int = CANDIDATE_POOL) -
     for i, c in enumerate(results):
         c["_rank"] = i
     return results
+
+
+def _meets_min(c: dict) -> bool:
+    w, h = c.get("width", 0) or 0, c.get("height", 0) or 0
+    return w >= MIN_WIDTH and w >= h
+
+
+def heuristic_scorer(c: dict) -> float:
+    rank = c.get("_rank", 0) or 0
+    likes = c.get("likes", 0) or 0
+    w, h = c.get("width", 0) or 0, c.get("height", 0) or 0
+    rank_score = 1.0 / (1 + rank)
+    likes_score = math.log1p(likes)
+    aspect = (w / h) if h else 0
+    aspect_penalty = abs(aspect - TARGET_ASPECT)
+    return rank_score * 2.0 + likes_score * 0.5 - aspect_penalty * 1.0

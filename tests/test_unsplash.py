@@ -83,3 +83,15 @@ def test_search_photos_raises_on_non_200():
             assert False, "expected UnsplashError"
         except unsplash.UnsplashError:
             pass
+
+
+def test_heuristic_scorer_prefers_better_photo():
+    good = {"_rank": 0, "likes": 500, "width": 5000, "height": 2813}
+    poor = {"_rank": 8, "likes": 3, "width": 4000, "height": 3000}
+    assert unsplash.heuristic_scorer(good) > unsplash.heuristic_scorer(poor)
+
+
+def test_meets_min_rejects_low_res_and_portrait():
+    assert unsplash._meets_min({"width": 5000, "height": 2813}) is True
+    assert unsplash._meets_min({"width": 2000, "height": 1200}) is False
+    assert unsplash._meets_min({"width": 3000, "height": 4000}) is False
