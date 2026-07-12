@@ -76,6 +76,15 @@ def test_make_vision_scorer_logs_score_and_reason(caplog):
     assert any("p2" in r.message and "clean skyline" in r.message for r in caplog.records)
 
 
+def test_make_vision_scorer_logs_failure(caplog):
+    cfg = {"url": "http://h/v1", "model": "m"}
+    with caplog.at_level("WARNING"), \
+         patch("openai_scorer._fetch_small", side_effect=RuntimeError("down")):
+        scorer = openai_scorer.make_vision_scorer("Kyoto", cfg)
+        assert scorer({"id": "p9"}) == 5.0
+    assert any("p9" in r.message and "FAILED" in r.message for r in caplog.records)
+
+
 def test_scorer_config_reads_env(monkeypatch):
     monkeypatch.setenv("SCORER_BACKEND", "openai")
     monkeypatch.setenv("SCORER_URL", "http://h/v1")

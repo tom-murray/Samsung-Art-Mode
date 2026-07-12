@@ -92,6 +92,7 @@ def make_vision_scorer(destination, config):
                 return s
             log.info("vision %s no score parsed → neutral 5.0 (%dms)", candidate.get("id"), ms)
         except Exception as e:  # noqa: BLE001
-            log.warning("vision %s FAILED (%r) → neutral 5.0", candidate.get("id"), e)
+            ms = int((time.monotonic() - t0) * 1000)
+            log.warning("vision %s FAILED (%r) → neutral 5.0 (%dms)", candidate.get("id"), e, ms)
         return 5.0
     return scorer
