@@ -220,3 +220,32 @@ def test_fetch_art_image_raises_when_search_and_random_both_fail():
             assert False, "expected UnsplashError"
         except unsplash.UnsplashError:
             pass
+
+
+def test_rank_candidates_sorts_by_score_desc_and_filters_min_res():
+    good = _cand("b", 0, likes=999)
+    poor = _cand("a", 3, likes=1)
+    tiny = {"id": "x", "_rank": 0, "likes": 5, "width": 1000, "height": 600}
+    ranked = unsplash.rank_candidates([poor, good, tiny], unsplash.heuristic_scorer)
+    assert [c["id"] for c, _ in ranked] == ["b", "a"]  # tiny dropped, b outranks a
+    assert ranked[0][1] > ranked[1][1]
+
+
+def test_pick_from_ranked_respects_top_k_and_exclude():
+    ranked = [(_cand(x, 0), score) for x, score in
+              [("a", 6), ("b", 5), ("c", 4), ("d", 3), ("e", 2), ("f", 1)]]
+    # last of top-5 with a pool-last rng is "e"; "f" is outside top_k
+    chosen = unsplash.pick_from_ranked(ranked, top_k=5, rng=_LastRng)
+    assert chosen["id"] == "e"
+
+
+def test_pick_from_ranked_none_when_empty():
+    assert unsplash.pick_from_ranked([], rng=_FirstRng) is None
+
+
+def test_choose_photo_logs_funnel(caplog):
+    cands = [_cand("a", 0, likes=999), _cand("b", 1, likes=1)]
+    with caplog.at_level("INFO"):
+        unsplash.choose_photo(cands, "Kyoto", rng=_FirstRng, config={"backend": "heuristic"})
+    text = " ".join(r.message for r in caplog.records)
+    assert "shortlist" in text and "picked" in text

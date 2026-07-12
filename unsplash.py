@@ -41,6 +41,7 @@ def fetch_art_image(access_key: str, keywords: str, size=(3840, 2160),
         log.warning("Unsplash search failed (%r); falling back to random", e)
 
     if chosen is None:
+        log.info("random fallback used for q=%r", query)
         chosen = _fetch_random(access_key, query)
 
     image_url = (chosen.get("urls", {}) or {}).get("full")
@@ -88,6 +89,7 @@ def search_photos(access_key: str, query: str, per_page: int = CANDIDATE_POOL) -
     results = data.get("results", []) if isinstance(data, dict) else []
     for i, c in enumerate(results):
         c["_rank"] = i
+    log.info("search q=%r status=%d results=%d", query, resp.status_code, len(results))
     return results
 
 
@@ -107,14 +109,28 @@ def heuristic_scorer(c: dict) -> float:
     return rank_score * 2.0 + likes_score * 0.5 - aspect_penalty * 1.0
 
 
-def select_best(candidates, exclude_id=None, scorer=heuristic_scorer, top_k=TOP_K, rng=random):
+def rank_candidates(candidates, scorer=heuristic_scorer):
+    """Filter to min-resolution-eligible candidates and return
+    [(candidate, score)] sorted by score descending. Scorer is called exactly
+    once per candidate (important when it is an expensive vision call)."""
     eligible = [c for c in (candidates or []) if _meets_min(c)]
-    if not eligible:
+    ranked = [(c, scorer(c)) for c in eligible]
+    ranked.sort(key=lambda t: t[1], reverse=True)
+    return ranked
+
+
+def pick_from_ranked(ranked, *, exclude_id=None, top_k=TOP_K, rng=random):
+    """Choose among the top_k highest-scored, avoiding exclude_id when possible."""
+    if not ranked:
         return None
-    eligible.sort(key=scorer, reverse=True)
-    top = eligible[:top_k]
+    top = [c for c, _ in ranked[:top_k]]
     pool = [c for c in top if c.get("id") != exclude_id] or top
     return rng.choice(pool)
+
+
+def select_best(candidates, exclude_id=None, scorer=heuristic_scorer, top_k=TOP_K, rng=random):
+    return pick_from_ranked(rank_candidates(candidates, scorer),
+                            exclude_id=exclude_id, top_k=top_k, rng=rng)
 
 
 def _photo_meta(c: dict) -> dict:
@@ -151,19 +167,34 @@ def _download_and_resize(image_url: str, size) -> bytes:
 
 def choose_photo(candidates, destination, *, exclude_id=None, rng=random, config=None):
     """Two-stage pick: heuristic pre-filter to a shortlist, then score by the
-    configured backend (vision when set, else heuristic)."""
+    configured backend (vision when set, else heuristic). Logs each funnel stage."""
     eligible = [c for c in (candidates or []) if _meets_min(c)]
     if not eligible:
+        log.info("shortlist empty (no candidate meets min-res gate)")
         return None
     eligible.sort(key=heuristic_scorer, reverse=True)
     shortlist = eligible[:SHORTLIST]
+    dropped = len(eligible) - len(shortlist)
 
     cfg = config if config is not None else scorer_config()
     if cfg.get("backend") == "openai" and cfg.get("url") and cfg.get("model"):
         scorer = make_vision_scorer(destination, cfg)
+        backend = "openai"
     else:
         scorer = heuristic_scorer
-    # select_best narrows to its top_k (TOP_K) by score, then rotates among them.
-    # Do NOT pass top_k=SHORTLIST — that would make the narrowing a no-op and the
-    # score would not affect the pick.
-    return select_best(shortlist, exclude_id=exclude_id, scorer=scorer, rng=rng)
+        backend = "heuristic"
+
+    # rank_candidates scores each shortlisted photo once; pick_from_ranked then
+    # narrows to TOP_K and rotates among them (do NOT widen top_k to SHORTLIST,
+    # or the score stops affecting the pick).
+    ranked = rank_candidates(shortlist, scorer)
+    scored = ", ".join(f"{c.get('id')} score={s:.2f}" for c, s in ranked)
+    tail = f"  dropped {dropped} beyond shortlist" if dropped else ""
+    log.info("shortlist(%d) backend=%s: %s%s", len(shortlist), backend, scored, tail)
+
+    chosen = pick_from_ranked(ranked, exclude_id=exclude_id, top_k=TOP_K, rng=rng)
+    if chosen is not None:
+        cs = next((s for c, s in ranked if c is chosen), None)
+        log.info("picked %s score=%s (top%d, excluded_last=%s) [backend=%s]",
+                 chosen.get("id"), f"{cs:.2f}" if cs is not None else "?", TOP_K, exclude_id, backend)
+    return chosen
