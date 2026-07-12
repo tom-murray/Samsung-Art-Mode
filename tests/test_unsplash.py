@@ -68,6 +68,13 @@ class _FirstRng:
         return seq[0]
 
 
+class _LastRng:
+    """Deterministic stand-in: always the last item of the pool."""
+    @staticmethod
+    def choice(seq):
+        return seq[-1]
+
+
 def _cand(id, rank, likes=100, width=5000, height=2813):
     return {"id": id, "_rank": rank, "likes": likes, "width": width, "height": height}
 
@@ -136,6 +143,18 @@ def test_choose_photo_none_when_all_below_min_res():
     assert unsplash.choose_photo(cands, "Kyoto", rng=_FirstRng, config={"backend": "heuristic"}) is None
 
 
+def test_choose_photo_drops_candidates_below_top_k():
+    # 6 eligible candidates scored a>b>c>d>e>f; only the top TOP_K (5) may be
+    # selected, so the worst ("f") must never be picked even with a pool-last rng.
+    cands = [_cand(x, 0) for x in "abcdef"]
+    scores = {"a": 6, "b": 5, "c": 4, "d": 3, "e": 2, "f": 1}
+    fake = lambda c: scores[c["id"]]
+    cfg = {"backend": "openai", "url": "http://h/v1", "model": "m"}
+    with patch("unsplash.make_vision_scorer", return_value=fake):
+        chosen = unsplash.choose_photo(cands, "Kyoto", rng=_LastRng, config=cfg)
+    assert chosen["id"] == "e"  # last of the top-5; "f" is excluded by scoring
+
+
 def _photo(id="p1", width=5000, height=2813):
     return {"id": id, "width": width, "height": height, "likes": 100, "_rank": 0,
             "alt_description": "scene", "user": {"name": "Jane"},
@@ -166,8 +185,9 @@ def test_fetch_art_image_excludes_last_shown():
 def test_fetch_art_image_falls_back_to_random_on_empty_search():
     empty = _Resp(200, {"results": []})
     rand = _Resp(200, _photo())
+    dl = _Resp(200, {})          # download trigger fires on the random path too
     photo = _Resp(200, content=_png_bytes())
-    with patch("unsplash.requests.get", side_effect=[empty, rand, photo]):
+    with patch("unsplash.requests.get", side_effect=[empty, rand, dl, photo]):
         data, meta = unsplash.fetch_art_image("key", "Kyoto", size=(320, 180))
     assert meta["id"] == "p1"
 

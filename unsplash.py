@@ -40,12 +40,17 @@ def fetch_art_image(access_key: str, keywords: str, size=(3840, 2160),
     except UnsplashError as e:
         log.warning("Unsplash search failed (%r); falling back to random", e)
 
-    if chosen is not None:
-        trigger_download(access_key, chosen.get("links", {}).get("download_location"))
-    else:
+    if chosen is None:
         chosen = _fetch_random(access_key, query)
 
-    image = _download_and_resize(chosen["urls"]["full"], size)
+    image_url = (chosen.get("urls", {}) or {}).get("full")
+    if not image_url:
+        raise UnsplashError("Chosen photo has no full-resolution URL")
+
+    # Unsplash requires a download trigger whenever a photo is used — on both the
+    # search and random paths. Best-effort.
+    trigger_download(access_key, (chosen.get("links", {}) or {}).get("download_location"))
+    image = _download_and_resize(image_url, size)
     return image, _photo_meta(chosen)
 
 
@@ -158,4 +163,7 @@ def choose_photo(candidates, destination, *, exclude_id=None, rng=random, config
         scorer = make_vision_scorer(destination, cfg)
     else:
         scorer = heuristic_scorer
-    return select_best(shortlist, exclude_id=exclude_id, scorer=scorer, top_k=SHORTLIST, rng=rng)
+    # select_best narrows to its top_k (TOP_K) by score, then rotates among them.
+    # Do NOT pass top_k=SHORTLIST — that would make the narrowing a no-op and the
+    # score would not affect the pick.
+    return select_best(shortlist, exclude_id=exclude_id, scorer=scorer, rng=rng)
