@@ -88,6 +88,25 @@ def test_score_image_surfaces_finish_reason():
     assert result == (None, None, "length")
 
 
+def test_parse_result_trailing_brace_keeps_reason():
+    # Valid JSON followed by an unrelated brace — non-greedy match keeps the reason
+    # instead of over-grabbing to the last '}' and losing it.
+    assert openai_scorer._parse_result('{"score": 8, "reason": "ok"} note {x}') == (8.0, "ok")
+
+
+def test_score_image_ignores_stray_numbers_in_truncated_reasoning():
+    # finish=length: content empty, reasoning is cut-off prose with incidental
+    # numbers but no JSON. Must NOT invent a score from "3 people" — fall through
+    # to (None, ...) so the caller applies the neutral 5.0.
+    def fake_post(url, json=None, headers=None, timeout=None):
+        return _chat("", finish="length",
+                     reasoning="I count 3 people, on a 0 to 10 scale this is about")
+
+    with patch("openai_scorer.requests.post", side_effect=fake_post):
+        result = openai_scorer.score_image(b"img", "Kyoto", url="http://h/v1", model="m")
+    assert result == (None, None, "length")
+
+
 def test_score_image_falls_back_to_reasoning_content():
     # Reasoning model finished (stop) but left content empty and put the answer
     # in reasoning_content — salvage the score from there.

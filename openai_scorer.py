@@ -38,22 +38,31 @@ def scorer_config() -> dict:
 _BOX_TOKENS = re.compile(r"<\|begin_of_box\|>|<\|end_of_box\|>")
 
 
-def _parse_result(content):
-    """Return (score, reason). Tolerates JSON wrapped in model box tokens or
-    markdown fences; falls back to the first bare number with no reason."""
-    if not content:
+def _extract_json(text):
+    """Parse the first {...} JSON object out of `text`, tolerating model box
+    tokens and markdown fences. Returns (None, None) if none is found/valid."""
+    if not text:
         return None, None
-    cleaned = _BOX_TOKENS.sub("", content)
-    obj_match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-    if obj_match:
+    cleaned = _BOX_TOKENS.sub("", text)
+    m = re.search(r"\{.*?\}", cleaned, re.DOTALL)
+    if m:
         try:
-            obj = json.loads(obj_match.group())
+            obj = json.loads(m.group())
             score = float(obj["score"])
             reason = obj.get("reason")
             return score, (str(reason) if reason is not None else None)
         except (ValueError, TypeError, KeyError, json.JSONDecodeError):
             pass
-    m = re.search(r"-?\d+(?:\.\d+)?", cleaned)
+    return None, None
+
+
+def _parse_result(content):
+    """Return (score, reason) from a model's answer text: prefer a JSON object,
+    otherwise fall back to the first bare number (a model may reply e.g. '8/10')."""
+    score, reason = _extract_json(content)
+    if score is not None:
+        return score, reason
+    m = re.search(r"-?\d+(?:\.\d+)?", _BOX_TOKENS.sub("", content or ""))
     return (float(m.group()) if m else None), None
 
 
@@ -85,8 +94,10 @@ def score_image(image_bytes, destination, *, url, model, api_key=None, timeout=3
     score, reason = _parse_result(content)
     if score is None:
         # Some reasoning models leave content empty and keep the answer in
-        # reasoning_content; try to salvage a score from there.
-        score, reason = _parse_result(message.get("reasoning_content") or "")
+        # reasoning_content. Accept a real JSON object there, but NEVER a bare
+        # number — truncated chain-of-thought is full of incidental numbers and
+        # would yield a confident bogus score instead of the neutral fallback.
+        score, reason = _extract_json(message.get("reasoning_content") or "")
     return score, reason, finish
 
 
