@@ -129,3 +129,24 @@ def test_select_best_falls_back_to_best_when_only_option_is_excluded():
     cands = [_cand("b", 0, likes=999)]
     chosen = unsplash.select_best(cands, exclude_id="b", rng=_FirstRng)
     assert chosen["id"] == "b"
+
+
+def test_photo_meta_extracts_attribution():
+    c = {"id": "p1", "alt_description": "kyoto dusk",
+         "user": {"name": "Jane"}, "links": {"html": "https://unsplash.com/photos/p1"}}
+    meta = unsplash._photo_meta(c)
+    assert meta == {"id": "p1", "description": "kyoto dusk",
+                    "photographer": "Jane", "source_url": "https://unsplash.com/photos/p1"}
+
+
+def test_trigger_download_is_best_effort():
+    with patch("unsplash.requests.get", side_effect=RuntimeError("boom")):
+        unsplash.trigger_download("key", "https://api.unsplash.com/photos/p1/download")
+
+
+def test_download_and_resize_returns_target_jpeg():
+    photo = _Resp(200, content=_png_bytes())
+    with patch("unsplash.requests.get", return_value=photo):
+        data = unsplash._download_and_resize("https://img.example/full", (320, 180))
+    img = Image.open(BytesIO(data))
+    assert img.format == "JPEG" and img.size == (320, 180)

@@ -99,3 +99,35 @@ def select_best(candidates, exclude_id=None, scorer=heuristic_scorer, top_k=TOP_
     top = eligible[:top_k]
     pool = [c for c in top if c.get("id") != exclude_id] or top
     return rng.choice(pool)
+
+
+def _photo_meta(c: dict) -> dict:
+    user = c.get("user", {}) or {}
+    links = c.get("links", {}) or {}
+    return {
+        "id": c.get("id"),
+        "description": c.get("description") or c.get("alt_description"),
+        "photographer": user.get("name"),
+        "source_url": links.get("html"),
+    }
+
+
+def trigger_download(access_key: str, download_location) -> None:
+    """Unsplash requires a GET to download_location whenever a photo is used.
+    Best-effort: never break the art update over an attribution ping."""
+    if not download_location:
+        return
+    try:
+        requests.get(download_location, headers={"Authorization": f"Client-ID {access_key}"}, timeout=10)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Unsplash download trigger failed: %r", e)
+
+
+def _download_and_resize(image_url: str, size) -> bytes:
+    photo = requests.get(f"{image_url}&w={size[0]}&h={size[1]}", timeout=30)
+    if photo.status_code != 200:
+        raise UnsplashError(f"Image download failed: {photo.status_code}")
+    img = ImageOps.fit(Image.open(BytesIO(photo.content)), size, Image.LANCZOS).convert("RGB")
+    out = BytesIO()
+    img.save(out, format="JPEG", optimize=True, quality=90)
+    return out.getvalue()
