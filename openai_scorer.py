@@ -28,30 +28,44 @@ def scorer_config() -> dict:
         "model": os.environ.get("SCORER_MODEL"),
         "api_key": os.environ.get("SCORER_API_KEY"),
         "timeout": float(os.environ.get("SCORER_TIMEOUT", "30")),
+        "max_tokens": int(os.environ.get("SCORER_MAX_TOKENS", "1000")),
     }
 
 
+# Reasoning vision models (e.g. GLM) wrap their JSON answer in special box tokens
+# or markdown fences. Strip those, then pull the first {...} object out and parse
+# it so the reason survives (not just the bare score).
+_BOX_TOKENS = re.compile(r"<\|begin_of_box\|>|<\|end_of_box\|>")
+
+
 def _parse_result(content):
-    """Return (score, reason). Falls back to the first number and no reason."""
+    """Return (score, reason). Tolerates JSON wrapped in model box tokens or
+    markdown fences; falls back to the first bare number with no reason."""
     if not content:
         return None, None
-    try:
-        obj = json.loads(content)
-        score = float(obj["score"])
-        reason = obj.get("reason")
-        return score, (str(reason) if reason is not None else None)
-    except (ValueError, TypeError, KeyError, json.JSONDecodeError):
-        pass
-    m = re.search(r"-?\d+(?:\.\d+)?", content)
+    cleaned = _BOX_TOKENS.sub("", content)
+    obj_match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if obj_match:
+        try:
+            obj = json.loads(obj_match.group())
+            score = float(obj["score"])
+            reason = obj.get("reason")
+            return score, (str(reason) if reason is not None else None)
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+            pass
+    m = re.search(r"-?\d+(?:\.\d+)?", cleaned)
     return (float(m.group()) if m else None), None
 
 
-def score_image(image_bytes, destination, *, url, model, api_key=None, timeout=30):
+def score_image(image_bytes, destination, *, url, model, api_key=None, timeout=30,
+                max_tokens=1000):
+    """Return (score, reason, finish_reason). max_tokens must be generous enough
+    for reasoning models to finish thinking AND emit the JSON answer."""
     data_uri = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()
     payload = {
         "model": model,
         "temperature": 0,
-        "max_tokens": 1000,
+        "max_tokens": max_tokens,
         "messages": [{"role": "user", "content": [
             {"type": "text", "text": PROMPT.format(destination=destination)},
             {"type": "image_url", "image_url": {"url": data_uri}},
@@ -63,9 +77,17 @@ def score_image(image_bytes, destination, *, url, model, api_key=None, timeout=3
     resp = requests.post(url.rstrip("/") + "/chat/completions", json=payload,
                          headers=headers, timeout=timeout)
     resp.raise_for_status()
-    content = resp.json()["choices"][0]["message"]["content"]
-    log.debug("LLM raw response: %r", content)  # never log the base64 image
-    return _parse_result(content)
+    choice = resp.json()["choices"][0]
+    message = choice.get("message", {}) or {}
+    finish = choice.get("finish_reason")
+    content = message.get("content") or ""
+    log.debug("LLM raw response: %r (finish=%s)", content, finish)  # never log the base64 image
+    score, reason = _parse_result(content)
+    if score is None:
+        # Some reasoning models leave content empty and keep the answer in
+        # reasoning_content; try to salvage a score from there.
+        score, reason = _parse_result(message.get("reasoning_content") or "")
+    return score, reason, finish
 
 
 def _fetch_small(candidate) -> bytes:
@@ -84,13 +106,17 @@ def make_vision_scorer(destination, config):
         t0 = time.monotonic()
         try:
             img = _fetch_small(candidate)
-            s, reason = score_image(img, destination, url=config["url"], model=config["model"],
-                                    api_key=config.get("api_key"), timeout=config.get("timeout", 30))
+            s, reason, finish = score_image(
+                img, destination, url=config["url"], model=config["model"],
+                api_key=config.get("api_key"), timeout=config.get("timeout", 30),
+                max_tokens=config.get("max_tokens", 1000))
             ms = int((time.monotonic() - t0) * 1000)
             if s is not None:
-                log.info("vision %s score=%.1f reason=%r (%dms)", candidate.get("id"), s, reason, ms)
+                log.info("vision %s score=%.1f reason=%r finish=%s (%dms)",
+                         candidate.get("id"), s, reason, finish, ms)
                 return s
-            log.info("vision %s no score parsed → neutral 5.0 (%dms)", candidate.get("id"), ms)
+            log.info("vision %s no score parsed (finish=%s) → neutral 5.0 (%dms)",
+                     candidate.get("id"), finish, ms)
         except Exception as e:  # noqa: BLE001
             ms = int((time.monotonic() - t0) * 1000)
             log.warning("vision %s FAILED (%r) → neutral 5.0 (%dms)", candidate.get("id"), e, ms)

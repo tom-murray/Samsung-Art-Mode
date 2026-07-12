@@ -16,8 +16,11 @@ class _Resp:
             raise RuntimeError(self.status_code)
 
 
-def _chat(content):
-    return _Resp(200, {"choices": [{"message": {"content": content}}]})
+def _chat(content, finish="stop", reasoning=None):
+    msg = {"content": content}
+    if reasoning is not None:
+        msg["reasoning_content"] = reasoning
+    return _Resp(200, {"choices": [{"message": msg, "finish_reason": finish}]})
 
 
 def test_parse_result_json_with_reason():
@@ -33,6 +36,18 @@ def test_parse_result_garbage_is_none_none():
     assert openai_scorer._parse_result("") == (None, None)
 
 
+def test_parse_result_strips_box_tokens():
+    # GLM-4.6V-Flash wraps its JSON in <|begin_of_box|>...<|end_of_box|>; the
+    # reason must survive, not just the score.
+    content = '\n<|begin_of_box|>{"score": 9, "reason": "Perfect Dubai skyline shot"}<|end_of_box|>'
+    assert openai_scorer._parse_result(content) == (9.0, "Perfect Dubai skyline shot")
+
+
+def test_parse_result_strips_markdown_fence():
+    content = '```json\n{"score": 8, "reason": "nice"}\n```'
+    assert openai_scorer._parse_result(content) == (8.0, "nice")
+
+
 def test_score_image_builds_request_and_parses():
     captured = {}
 
@@ -42,21 +57,68 @@ def test_score_image_builds_request_and_parses():
 
     with patch("openai_scorer.requests.post", side_effect=fake_post):
         result = openai_scorer.score_image(b"img", "Kyoto", url="http://h:1234/v1", model="m", api_key="k")
-    assert result == (9.0, "great")
+    assert result == (9.0, "great", "stop")
     assert captured["url"] == "http://h:1234/v1/chat/completions"
     assert captured["json"]["model"] == "m"
+    assert captured["json"]["max_tokens"] == 1000  # default
     content = captured["json"]["messages"][0]["content"]
     assert "Kyoto" in content[0]["text"]
     assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
     assert captured["headers"]["Authorization"] == "Bearer k"
 
 
+def test_score_image_uses_configurable_max_tokens():
+    captured = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured.update(json=json)
+        return _chat('{"score": 5, "reason": "x"}')
+
+    with patch("openai_scorer.requests.post", side_effect=fake_post):
+        openai_scorer.score_image(b"img", "Kyoto", url="http://h/v1", model="m", max_tokens=1234)
+    assert captured["json"]["max_tokens"] == 1234
+
+
+def test_score_image_surfaces_finish_reason():
+    def fake_post(url, json=None, headers=None, timeout=None):
+        return _chat("", finish="length")  # truncated: empty content, no reasoning
+
+    with patch("openai_scorer.requests.post", side_effect=fake_post):
+        result = openai_scorer.score_image(b"img", "Kyoto", url="http://h/v1", model="m")
+    assert result == (None, None, "length")
+
+
+def test_score_image_falls_back_to_reasoning_content():
+    # Reasoning model finished (stop) but left content empty and put the answer
+    # in reasoning_content — salvage the score from there.
+    def fake_post(url, json=None, headers=None, timeout=None):
+        return _chat("", finish="stop", reasoning='I rate this {"score": 6, "reason": "ok"}')
+
+    with patch("openai_scorer.requests.post", side_effect=fake_post):
+        result = openai_scorer.score_image(b"img", "Kyoto", url="http://h/v1", model="m")
+    assert result == (6.0, "ok", "stop")
+
+
 def test_make_vision_scorer_returns_model_score():
     cfg = {"url": "http://h/v1", "model": "m", "timeout": 5}
     with patch("openai_scorer._fetch_small", return_value=b"img"), \
-         patch("openai_scorer.score_image", return_value=(8.0, "nice")):
+         patch("openai_scorer.score_image", return_value=(8.0, "nice", "stop")):
         scorer = openai_scorer.make_vision_scorer("Kyoto", cfg)
         assert scorer({"id": "p1"}) == 8.0
+
+
+def test_make_vision_scorer_passes_max_tokens_from_config():
+    cfg = {"url": "http://h/v1", "model": "m", "max_tokens": 321}
+    captured = {}
+
+    def fake_score(img, destination, **kwargs):
+        captured.update(kwargs)
+        return (7.0, "ok", "stop")
+
+    with patch("openai_scorer._fetch_small", return_value=b"img"), \
+         patch("openai_scorer.score_image", side_effect=fake_score):
+        openai_scorer.make_vision_scorer("Kyoto", cfg)({"id": "p1"})
+    assert captured["max_tokens"] == 321
 
 
 def test_make_vision_scorer_neutral_on_failure():
@@ -66,14 +128,26 @@ def test_make_vision_scorer_neutral_on_failure():
         assert scorer({"id": "p1"}) == 5.0
 
 
-def test_make_vision_scorer_logs_score_and_reason(caplog):
+def test_make_vision_scorer_logs_score_reason_and_finish(caplog):
     cfg = {"url": "http://h/v1", "model": "m"}
     with caplog.at_level("INFO"), \
          patch("openai_scorer._fetch_small", return_value=b"img"), \
-         patch("openai_scorer.score_image", return_value=(8.5, "clean skyline")):
+         patch("openai_scorer.score_image", return_value=(8.5, "clean skyline", "stop")):
         scorer = openai_scorer.make_vision_scorer("Kyoto", cfg)
         scorer({"id": "p2"})
-    assert any("p2" in r.message and "clean skyline" in r.message for r in caplog.records)
+    assert any("p2" in r.message and "clean skyline" in r.message and "finish=stop" in r.message
+               for r in caplog.records)
+
+
+def test_make_vision_scorer_logs_finish_on_no_score(caplog):
+    cfg = {"url": "http://h/v1", "model": "m"}
+    with caplog.at_level("INFO"), \
+         patch("openai_scorer._fetch_small", return_value=b"img"), \
+         patch("openai_scorer.score_image", return_value=(None, None, "length")):
+        scorer = openai_scorer.make_vision_scorer("Kyoto", cfg)
+        assert scorer({"id": "p3"}) == 5.0
+    assert any("p3" in r.message and "no score parsed" in r.message and "finish=length" in r.message
+               for r in caplog.records)
 
 
 def test_make_vision_scorer_logs_failure(caplog):
@@ -91,6 +165,16 @@ def test_scorer_config_reads_env(monkeypatch):
     monkeypatch.setenv("SCORER_MODEL", "m")
     cfg = openai_scorer.scorer_config()
     assert cfg["backend"] == "openai" and cfg["url"] == "http://h/v1" and cfg["model"] == "m"
+
+
+def test_scorer_config_reads_max_tokens(monkeypatch):
+    monkeypatch.setenv("SCORER_MAX_TOKENS", "777")
+    assert openai_scorer.scorer_config()["max_tokens"] == 777
+
+
+def test_scorer_config_default_max_tokens(monkeypatch):
+    monkeypatch.delenv("SCORER_MAX_TOKENS", raising=False)
+    assert openai_scorer.scorer_config()["max_tokens"] == 1000
 
 
 def test_no_secrets_or_base64_logged_at_info(caplog):
