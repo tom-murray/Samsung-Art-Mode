@@ -303,6 +303,8 @@ request failed), or `500` (uploading to the TV failed).
   WebSocket auth tokens are saved after pairing. When running in Docker,
   mount a volume at this path so tokens survive container rebuilds, e.g.
   `-v samsung-art-mode-tokens:/data/tokens`.
+- **`LOG_LEVEL`** (optional, default `INFO`) — log verbosity for the request
+  trace. `DEBUG` adds raw LLM responses; base64 images are never logged.
 
 ### Vision scorer (optional)
 
@@ -321,6 +323,15 @@ With `SCORER_BACKEND=openai` and `SCORER_URL`/`SCORER_MODEL` set, each shortlist
 candidate is scored by the model against a "framed art of `<destination>`,
 reject people/text/watermarks" rubric. If the endpoint is unset or unreachable,
 it falls back to the heuristics — art updates never fail because of the scorer.
+
+### Request tracing
+
+Every art-mode request emits a timestamped, correlation-id-tagged trace to the
+container logs (search → shortlist scores → per-image LLM score + reason → pick →
+upload → total time). Follow a single request with
+`docker logs samsung-art-mode | grep <id>`, where `<id>` is the `[id]` shown on each
+log line. Set `LOG_LEVEL=DEBUG` for extra detail (raw LLM responses); base64 image
+data is never logged.
 
 ## Diagnosing an unsupported TV
 
