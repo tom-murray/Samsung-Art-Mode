@@ -51,7 +51,7 @@ def score_image(image_bytes, destination, *, url, model, api_key=None, timeout=3
     payload = {
         "model": model,
         "temperature": 0,
-        "max_tokens": 50,
+        "max_tokens": 1000,
         "messages": [{"role": "user", "content": [
             {"type": "text", "text": PROMPT.format(destination=destination)},
             {"type": "image_url", "image_url": {"url": data_uri}},
