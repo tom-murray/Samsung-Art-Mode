@@ -309,3 +309,14 @@ def test_diagnose_collects_rest_and_both_ports(tmp_path):
     assert report["rest"]["modelName"] == "UE43LS003"
     assert report["ports"]["8002"]["supported"] is True
     assert report["ports"]["8001"]["supported"] is False
+
+
+def test_record_and_read_last_photo(tmp_path):
+    assert tvcontrol.last_photo("1.2.3.4", token_dir=str(tmp_path)) is None
+    tvcontrol.record_photo("1.2.3.4", "photo-9", token_dir=str(tmp_path))
+    assert tvcontrol.last_photo("1.2.3.4", token_dir=str(tmp_path)) == "photo-9"
+
+
+def test_record_photo_ignores_empty_id(tmp_path):
+    tvcontrol.record_photo("1.2.3.4", None, token_dir=str(tmp_path))
+    assert tvcontrol.last_photo("1.2.3.4", token_dir=str(tmp_path)) is None

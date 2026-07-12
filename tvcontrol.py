@@ -385,6 +385,15 @@ def state(ip: str, token_dir: str = None):
     }
 
 
+def last_photo(ip: str, token_dir: str = None):
+    return device_cache.recall(ip, token_dir or DEFAULT_TOKEN_DIR).get("last_photo")
+
+
+def record_photo(ip: str, photo_id, token_dir: str = None) -> None:
+    if photo_id:
+        device_cache.remember(ip, {"last_photo": photo_id}, token_dir or DEFAULT_TOKEN_DIR)
+
+
 def _remember_device(ip: str, device: dict, token_dir: str) -> None:
     device_cache.remember(ip, {
         "modelName": device.get("modelName"),
