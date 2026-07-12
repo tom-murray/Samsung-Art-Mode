@@ -1,4 +1,5 @@
 import logging
+import re
 
 import tracing
 
@@ -6,7 +7,7 @@ import tracing
 def test_new_request_id_sets_contextvar():
     rid = tracing.new_request_id()
     assert rid and rid == tracing.get_request_id()
-    assert len(rid) <= 8
+    assert len(rid) == 6
 
 
 def test_set_request_id_and_default():
@@ -30,5 +31,5 @@ def test_configure_logging_format_has_timestamp_and_id(capsys):
     err = capsys.readouterr().err
     assert "[f00d]" in err
     assert "hello" in err
-    # ISO-ish date: YYYY-MM-DD present
-    assert err.count("-") >= 2
+    # ISO-ish timestamp immediately followed by the request id
+    assert re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[f00d\]", err)
