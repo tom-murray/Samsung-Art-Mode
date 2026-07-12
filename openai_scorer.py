@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import time
 
 import requests
 
@@ -15,7 +16,8 @@ PROMPT = (
     "art of {destination} from 0 to 10. Score high only if it clearly depicts "
     "{destination}, looks like a professional, well-composed scenic photograph "
     "suitable for wall art, and contains no people, faces, text, logos or "
-    'watermarks. Reply with ONLY JSON: {{"score": <number 0-10>}}.'
+    'watermarks. Reply with ONLY JSON: {{"score": <number 0-10>, '
+    '"reason": "<8 words max>"}}.'
 )
 
 
@@ -29,15 +31,19 @@ def scorer_config() -> dict:
     }
 
 
-def _parse_score(content):
+def _parse_result(content):
+    """Return (score, reason). Falls back to the first number and no reason."""
     if not content:
-        return None
+        return None, None
     try:
-        return float(json.loads(content)["score"])
+        obj = json.loads(content)
+        score = float(obj["score"])
+        reason = obj.get("reason")
+        return score, (str(reason) if reason is not None else None)
     except (ValueError, TypeError, KeyError, json.JSONDecodeError):
         pass
     m = re.search(r"-?\d+(?:\.\d+)?", content)
-    return float(m.group()) if m else None
+    return (float(m.group()) if m else None), None
 
 
 def score_image(image_bytes, destination, *, url, model, api_key=None, timeout=30):
@@ -58,7 +64,8 @@ def score_image(image_bytes, destination, *, url, model, api_key=None, timeout=3
                          headers=headers, timeout=timeout)
     resp.raise_for_status()
     content = resp.json()["choices"][0]["message"]["content"]
-    return _parse_score(content)
+    log.debug("LLM raw response: %r", content)  # never log the base64 image
+    return _parse_result(content)
 
 
 def _fetch_small(candidate) -> bytes:
@@ -71,15 +78,20 @@ def _fetch_small(candidate) -> bytes:
 
 def make_vision_scorer(destination, config):
     """Return scorer(candidate)->float. On any error, a neutral 5.0 keeps the
-    0-10 scale consistent (a failed call neither wins nor loses)."""
+    0-10 scale consistent (a failed call neither wins nor loses). Each call is
+    logged with the image's score, short reason, and elapsed time."""
     def scorer(candidate):
+        t0 = time.monotonic()
         try:
             img = _fetch_small(candidate)
-            s = score_image(img, destination, url=config["url"], model=config["model"],
-                            api_key=config.get("api_key"), timeout=config.get("timeout", 30))
+            s, reason = score_image(img, destination, url=config["url"], model=config["model"],
+                                    api_key=config.get("api_key"), timeout=config.get("timeout", 30))
+            ms = int((time.monotonic() - t0) * 1000)
             if s is not None:
+                log.info("vision %s score=%.1f reason=%r (%dms)", candidate.get("id"), s, reason, ms)
                 return s
+            log.info("vision %s no score parsed → neutral 5.0 (%dms)", candidate.get("id"), ms)
         except Exception as e:  # noqa: BLE001
-            log.warning("vision score failed for %s (%r)", candidate.get("id"), e)
+            log.warning("vision %s FAILED (%r) → neutral 5.0", candidate.get("id"), e)
         return 5.0
     return scorer
