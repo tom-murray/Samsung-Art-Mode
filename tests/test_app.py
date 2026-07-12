@@ -78,3 +78,21 @@ def test_art_mode_passes_mac_through(monkeypatch):
         client().post("/tvs/1.2.3.4/art-mode", json={"keywords": "Dubai", "mac": "AA:BB:CC:DD:EE:FF"})
     assert apply.call_args.kwargs["mac"] == "AA:BB:CC:DD:EE:FF"
     assert fetch.call_args.kwargs["exclude_id"] == "prev"
+
+
+def test_art_mode_logs_request_and_done(monkeypatch, caplog):
+    monkeypatch.setenv("UNSPLASH_ACCESS_KEY", "envkey")
+    photo = {"id": "p1", "photographer": "Jane", "source_url": "u", "description": "d"}
+    with caplog.at_level("INFO"), \
+         patch("app.tvcontrol.last_photo", return_value=None), \
+         patch("app.unsplash.fetch_art_image", return_value=(b"jpeg", photo)), \
+         patch("app.tvcontrol.apply_art", return_value={"uploaded_id": "N1", "port": 8002}), \
+         patch("app.tvcontrol.record_photo"):
+        client().post("/tvs/1.2.3.4/art-mode", json={"keywords": "Kyoto"})
+    text = " ".join(r.message for r in caplog.records)
+    assert "art-mode tv=1.2.3.4" in text
+    assert "keywords='Kyoto'" in text
+    assert "done success in" in text
+    # every art-mode record shares one non-default request id
+    ids = {getattr(r, "request_id", "-") for r in caplog.records if "art-mode" in r.message or "done" in r.message}
+    assert ids and ids != {"-"}
