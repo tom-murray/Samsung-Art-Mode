@@ -168,13 +168,14 @@ def _download_and_resize(image_url: str, size) -> bytes:
 def choose_photo(candidates, destination, *, exclude_id=None, rng=random, config=None):
     """Two-stage pick: heuristic pre-filter to a shortlist, then score by the
     configured backend (vision when set, else heuristic). Logs each funnel stage."""
-    eligible = [c for c in (candidates or []) if _meets_min(c)]
-    if not eligible:
-        log.info("shortlist empty (no candidate meets min-res gate)")
+    total = len(candidates or [])
+    prelim = rank_candidates(candidates, heuristic_scorer)  # eligible, heuristic-sorted
+    below_min = total - len(prelim)
+    if not prelim:
+        log.info("shortlist empty: 0/%d candidates meet the min-res gate", total)
         return None
-    eligible.sort(key=heuristic_scorer, reverse=True)
-    shortlist = eligible[:SHORTLIST]
-    dropped = len(eligible) - len(shortlist)
+    shortlist = [c for c, _ in prelim[:SHORTLIST]]
+    beyond = len(prelim) - len(shortlist)
 
     cfg = config if config is not None else scorer_config()
     if cfg.get("backend") == "openai" and cfg.get("url") and cfg.get("model"):
@@ -189,8 +190,8 @@ def choose_photo(candidates, destination, *, exclude_id=None, rng=random, config
     # or the score stops affecting the pick).
     ranked = rank_candidates(shortlist, scorer)
     scored = ", ".join(f"{c.get('id')} score={s:.2f}" for c, s in ranked)
-    tail = f"  dropped {dropped} beyond shortlist" if dropped else ""
-    log.info("shortlist(%d) backend=%s: %s%s", len(shortlist), backend, scored, tail)
+    log.info("shortlist(%d/%d) backend=%s: %s (below-min-res=%d, beyond-shortlist=%d)",
+             len(shortlist), total, backend, scored, below_min, beyond)
 
     chosen = pick_from_ranked(ranked, exclude_id=exclude_id, top_k=TOP_K, rng=rng)
     if chosen is not None:

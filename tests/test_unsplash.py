@@ -249,3 +249,13 @@ def test_choose_photo_logs_funnel(caplog):
         unsplash.choose_photo(cands, "Kyoto", rng=_FirstRng, config={"backend": "heuristic"})
     text = " ".join(r.message for r in caplog.records)
     assert "shortlist" in text and "picked" in text
+
+
+def test_choose_photo_logs_full_dropoff(caplog):
+    good = [_cand(f"g{i}", i) for i in range(10)]  # 10 eligible, heuristic-sorted
+    tiny = [{"id": f"t{i}", "_rank": 0, "likes": 1, "width": 1000, "height": 600} for i in range(2)]
+    with caplog.at_level("INFO"):
+        unsplash.choose_photo(good + tiny, "Kyoto", rng=_FirstRng, config={"backend": "heuristic"})
+    line = next(r.message for r in caplog.records if "shortlist(" in r.message)
+    assert "below-min-res=2" in line
+    assert "beyond-shortlist=2" in line  # 10 eligible - 8 shortlist
