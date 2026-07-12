@@ -200,6 +200,17 @@ def test_fetch_art_image_raises_on_empty_keywords():
         pass
 
 
+def test_fetch_art_image_raises_when_chosen_has_no_full_url():
+    # candidate passes the resolution gate but has no urls.full → clean UnsplashError
+    bad = {"id": "p1", "width": 5000, "height": 2813, "_rank": 0, "urls": {}, "links": {}}
+    with patch("unsplash.requests.get", side_effect=[_Resp(200, {"results": [bad]})]):
+        try:
+            unsplash.fetch_art_image("key", "Kyoto")
+            assert False, "expected UnsplashError"
+        except unsplash.UnsplashError:
+            pass
+
+
 def test_fetch_art_image_raises_when_search_and_random_both_fail():
     bad_search = _Resp(500, {})
     bad_random = _Resp(401, {})
