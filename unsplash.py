@@ -6,12 +6,15 @@ import requests
 from io import BytesIO
 from PIL import Image, ImageOps
 
+from openai_scorer import make_vision_scorer, scorer_config
+
 log = logging.getLogger(__name__)
 
 UNSPLASH_URL = "https://api.unsplash.com/photos/random"
 SEARCH_URL = "https://api.unsplash.com/search/photos"
 CANDIDATE_POOL = 30
 TOP_K = 5
+SHORTLIST = 8
 MIN_WIDTH = 3000
 TARGET_ASPECT = 16 / 9
 
@@ -131,3 +134,20 @@ def _download_and_resize(image_url: str, size) -> bytes:
     out = BytesIO()
     img.save(out, format="JPEG", optimize=True, quality=90)
     return out.getvalue()
+
+
+def choose_photo(candidates, destination, *, exclude_id=None, rng=random, config=None):
+    """Two-stage pick: heuristic pre-filter to a shortlist, then score by the
+    configured backend (vision when set, else heuristic)."""
+    eligible = [c for c in (candidates or []) if _meets_min(c)]
+    if not eligible:
+        return None
+    eligible.sort(key=heuristic_scorer, reverse=True)
+    shortlist = eligible[:SHORTLIST]
+
+    cfg = config if config is not None else scorer_config()
+    if cfg.get("backend") == "openai" and cfg.get("url") and cfg.get("model"):
+        scorer = make_vision_scorer(destination, cfg)
+    else:
+        scorer = heuristic_scorer
+    return select_best(shortlist, exclude_id=exclude_id, scorer=scorer, top_k=SHORTLIST, rng=rng)

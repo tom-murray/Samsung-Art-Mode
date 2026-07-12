@@ -150,3 +150,23 @@ def test_download_and_resize_returns_target_jpeg():
         data = unsplash._download_and_resize("https://img.example/full", (320, 180))
     img = Image.open(BytesIO(data))
     assert img.format == "JPEG" and img.size == (320, 180)
+
+
+def test_choose_photo_heuristic_when_not_configured():
+    cands = [_cand("a", 3, likes=1), _cand("b", 0, likes=999)]
+    chosen = unsplash.choose_photo(cands, "Kyoto", rng=_FirstRng, config={"backend": "heuristic"})
+    assert chosen["id"] == "b"
+
+
+def test_choose_photo_uses_vision_scorer_when_configured():
+    cands = [_cand("a", 0, likes=999), _cand("b", 1, likes=1)]
+    fake_scorer = lambda c: 9.0 if c["id"] == "b" else 1.0
+    cfg = {"backend": "openai", "url": "http://h/v1", "model": "m"}
+    with patch("unsplash.make_vision_scorer", return_value=fake_scorer):
+        chosen = unsplash.choose_photo(cands, "Kyoto", rng=_FirstRng, config=cfg)
+    assert chosen["id"] == "b"
+
+
+def test_choose_photo_none_when_all_below_min_res():
+    cands = [{"id": "x", "_rank": 0, "likes": 5, "width": 1000, "height": 600}]
+    assert unsplash.choose_photo(cands, "Kyoto", rng=_FirstRng, config={"backend": "heuristic"}) is None
