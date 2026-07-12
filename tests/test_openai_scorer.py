@@ -91,3 +91,25 @@ def test_scorer_config_reads_env(monkeypatch):
     monkeypatch.setenv("SCORER_MODEL", "m")
     cfg = openai_scorer.scorer_config()
     assert cfg["backend"] == "openai" and cfg["url"] == "http://h/v1" and cfg["model"] == "m"
+
+
+def test_no_secrets_or_base64_logged_at_info(caplog):
+    """Privacy contract: the api_key, the raw base64 image, and the raw model
+    response must never appear in the logs at INFO level."""
+    import base64
+
+    cfg = {"url": "http://h/v1", "model": "m", "api_key": "SECRET-KEY"}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        return _chat('{"score": 7, "reason": "ok"}')
+
+    with caplog.at_level("INFO"), \
+         patch("openai_scorer._fetch_small", return_value=b"IMAGEBYTES"), \
+         patch("openai_scorer.requests.post", side_effect=fake_post):
+        scorer = openai_scorer.make_vision_scorer("Kyoto", cfg)
+        assert scorer({"id": "p1", "urls": {"small": "http://img"}}) == 7.0
+
+    blob = " ".join(r.getMessage() for r in caplog.records)
+    assert "SECRET-KEY" not in blob
+    assert "base64" not in blob.lower()
+    assert base64.b64encode(b"IMAGEBYTES").decode() not in blob
