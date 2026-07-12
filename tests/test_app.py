@@ -96,3 +96,19 @@ def test_art_mode_logs_request_and_done(monkeypatch, caplog):
     # every art-mode record shares one non-default request id
     ids = {getattr(r, "request_id", "-") for r in caplog.records if "art-mode" in r.message or "done" in r.message}
     assert ids and ids != {"-"}
+
+
+def test_sequential_requests_get_distinct_ids(monkeypatch, caplog):
+    monkeypatch.setenv("UNSPLASH_ACCESS_KEY", "envkey")
+    photo = {"id": "p1", "photographer": "Jane", "source_url": "u", "description": "d"}
+    ids = []
+    with patch("app.tvcontrol.last_photo", return_value=None), \
+         patch("app.unsplash.fetch_art_image", return_value=(b"jpeg", photo)), \
+         patch("app.tvcontrol.apply_art", return_value={"uploaded_id": "N1", "port": 8002}), \
+         patch("app.tvcontrol.record_photo"):
+        for _ in range(2):
+            caplog.clear()
+            with caplog.at_level("INFO"):
+                client().post("/tvs/1.2.3.4/art-mode", json={"keywords": "Kyoto"})
+            ids.append(next(r.request_id for r in caplog.records if "art-mode tv=" in r.message))
+    assert ids[0] != ids[1] and "-" not in ids

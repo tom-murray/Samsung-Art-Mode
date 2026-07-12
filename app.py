@@ -12,6 +12,9 @@ import unsplash
 app = Flask(__name__)
 tracing.configure_logging()
 log = logging.getLogger("app")
+# The StreamHandler installed by configure_logging() already stamps request_id on
+# every record in production. This per-logger filter is only so records still carry
+# request_id for handlers that bypass ours (e.g. pytest's caplog).
 log.addFilter(tracing.RequestIdFilter())
 
 
@@ -57,8 +60,10 @@ def art_mode(tv_ip):
     access_key = data.get("access_key") or os.environ.get("UNSPLASH_ACCESS_KEY")
 
     if not keywords:
+        log.warning("art-mode tv=%s rejected: missing keywords", tv_ip)
         return jsonify(error="Missing required parameter: keywords"), 400
     if not access_key:
+        log.warning("art-mode tv=%s rejected: missing access_key", tv_ip)
         return jsonify(error="Missing Unsplash access_key (body or UNSPLASH_ACCESS_KEY env)"), 400
 
     exclude_id = tvcontrol.last_photo(tv_ip)
@@ -68,6 +73,7 @@ def art_mode(tv_ip):
     try:
         image, photo = unsplash.fetch_art_image(access_key, keywords, exclude_id=exclude_id)
     except ValueError as e:
+        log.warning("art-mode tv=%s rejected: %s", tv_ip, e)
         return jsonify(error=str(e)), 400
     except unsplash.UnsplashError as e:
         log.warning("art-mode aborted: %s", e)
