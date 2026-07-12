@@ -320,3 +320,20 @@ def test_record_and_read_last_photo(tmp_path):
 def test_record_photo_ignores_empty_id(tmp_path):
     tvcontrol.record_photo("1.2.3.4", None, token_dir=str(tmp_path))
     assert tvcontrol.last_photo("1.2.3.4", token_dir=str(tmp_path)) is None
+
+
+def test_apply_art_logs_upload(monkeypatch, caplog):
+    import tvcontrol
+
+    class _Art:
+        def get_current(self): return {"content_id": "OLD"}
+        def upload(self, *a, **k): return "NEW-1"
+        def select_image(self, *a, **k): return None
+        def delete(self, *a, **k): return None
+        def close(self): pass
+
+    monkeypatch.setattr(tvcontrol, "connect", lambda ip, td, mac=None: (_Art(), 8002))
+    with caplog.at_level("INFO"):
+        result = tvcontrol.apply_art("1.2.3.4", b"jpeg")
+    assert result == {"uploaded_id": "NEW-1", "port": 8002}
+    assert any("uploaded=NEW-1" in r.message and "8002" in r.message for r in caplog.records)

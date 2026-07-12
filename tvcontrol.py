@@ -248,6 +248,7 @@ def apply_art(ip: str, image_bytes: bytes, token_dir: str = None, mac: str = Non
             if del_err:
                 log.warning("delete old image failed on %s (%s)", ip, del_err)
 
+        log.info("uploaded=%s port=%s", uploaded_id, session.port)
         return {"uploaded_id": uploaded_id, "port": session.port}
     finally:
         session.close()
