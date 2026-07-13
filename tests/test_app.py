@@ -27,7 +27,7 @@ def test_art_mode_missing_access_key_returns_400(monkeypatch):
 def test_art_mode_happy_path(monkeypatch):
     monkeypatch.setenv("UNSPLASH_ACCESS_KEY", "envkey")
     photo = {"id": "p1", "photographer": "Jane", "source_url": "u", "description": "d"}
-    with patch("app.tvcontrol.last_photo", return_value=None), \
+    with patch("app.tvcontrol.recent_photos", return_value=[]), \
          patch("app.unsplash.fetch_art_image", return_value=(b"jpeg", photo)) as fetch, \
          patch("app.tvcontrol.apply_art", return_value={"uploaded_id": "N1", "port": 8002}), \
          patch("app.tvcontrol.record_photo") as record:
@@ -36,7 +36,7 @@ def test_art_mode_happy_path(monkeypatch):
     body = resp.get_json()
     assert body["status"] == "success"
     assert body["photo"]["id"] == "p1"
-    fetch.assert_called_once_with("envkey", "Dubai", exclude_id=None)
+    fetch.assert_called_once_with("envkey", "Dubai", exclude_ids=[])
     record.assert_called_once_with("1.2.3.4", "p1")
 
 
@@ -71,20 +71,20 @@ def test_wake_returns_result():
 def test_art_mode_passes_mac_through(monkeypatch):
     monkeypatch.setenv("UNSPLASH_ACCESS_KEY", "envkey")
     photo = {"id": "p1", "photographer": "Jane", "source_url": "u", "description": "d"}
-    with patch("app.tvcontrol.last_photo", return_value="prev"), \
+    with patch("app.tvcontrol.recent_photos", return_value=["prev"]), \
          patch("app.unsplash.fetch_art_image", return_value=(b"jpeg", photo)) as fetch, \
          patch("app.tvcontrol.apply_art", return_value={"uploaded_id": "N1", "port": 8002}) as apply, \
          patch("app.tvcontrol.record_photo"):
         client().post("/tvs/1.2.3.4/art-mode", json={"keywords": "Dubai", "mac": "AA:BB:CC:DD:EE:FF"})
     assert apply.call_args.kwargs["mac"] == "AA:BB:CC:DD:EE:FF"
-    assert fetch.call_args.kwargs["exclude_id"] == "prev"
+    assert fetch.call_args.kwargs["exclude_ids"] == ["prev"]
 
 
 def test_art_mode_logs_request_and_done(monkeypatch, caplog):
     monkeypatch.setenv("UNSPLASH_ACCESS_KEY", "envkey")
     photo = {"id": "p1", "photographer": "Jane", "source_url": "u", "description": "d"}
     with caplog.at_level("INFO"), \
-         patch("app.tvcontrol.last_photo", return_value=None), \
+         patch("app.tvcontrol.recent_photos", return_value=[]), \
          patch("app.unsplash.fetch_art_image", return_value=(b"jpeg", photo)), \
          patch("app.tvcontrol.apply_art", return_value={"uploaded_id": "N1", "port": 8002}), \
          patch("app.tvcontrol.record_photo"):
@@ -102,7 +102,7 @@ def test_sequential_requests_get_distinct_ids(monkeypatch, caplog):
     monkeypatch.setenv("UNSPLASH_ACCESS_KEY", "envkey")
     photo = {"id": "p1", "photographer": "Jane", "source_url": "u", "description": "d"}
     ids = []
-    with patch("app.tvcontrol.last_photo", return_value=None), \
+    with patch("app.tvcontrol.recent_photos", return_value=[]), \
          patch("app.unsplash.fetch_art_image", return_value=(b"jpeg", photo)), \
          patch("app.tvcontrol.apply_art", return_value={"uploaded_id": "N1", "port": 8002}), \
          patch("app.tvcontrol.record_photo"):

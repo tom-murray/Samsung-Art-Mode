@@ -12,12 +12,19 @@ import requests
 log = logging.getLogger(__name__)
 
 PROMPT = (
-    "You are curating art for a Samsung Frame TV. Rate the image as framed wall "
-    "art of {destination} from 0 to 10. Score high only if it clearly depicts "
-    "{destination}, looks like a professional, well-composed scenic photograph "
-    "suitable for wall art, and contains no people, faces, text, logos or "
-    'watermarks. Reply with ONLY JSON: {{"score": <number 0-10>, '
-    '"reason": "<8 words max>"}}.'
+    "You are curating gallery-quality art for a Samsung Frame TV showing "
+    "{destination}. Rate the image from 0 to 10 as framed wall art of "
+    "{destination}. Reward instantly-recognisable, striking views of "
+    "{destination}: famous landmarks and points of interest, city skylines and "
+    "cityscapes, sweeping aerial or drone shots, heritage and historic sites, "
+    "and natural or built attractions — professional, well-composed, and clearly "
+    "set in {destination}. Score LOW (0-4) for images not clearly {destination} "
+    "or that could be anywhere, people or portraits as the subject, food, "
+    "interiors, close-ups of objects, signage, text, logos, watermarks, "
+    "snapshots, and dull or cluttered composition. Use the FULL range and be "
+    "critical: most images are average (4-6); reserve 9-10 for truly "
+    "exceptional, iconic wall-art shots. Reply with ONLY JSON: "
+    '{{"score": <number 0-10>, "reason": "<8 words max>"}}.'
 )
 
 

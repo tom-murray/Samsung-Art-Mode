@@ -66,12 +66,12 @@ def art_mode(tv_ip):
         log.warning("art-mode tv=%s rejected: missing access_key", tv_ip)
         return jsonify(error="Missing Unsplash access_key (body or UNSPLASH_ACCESS_KEY env)"), 400
 
-    exclude_id = tvcontrol.last_photo(tv_ip)
+    exclude_ids = tvcontrol.recent_photos(tv_ip)
     backend = openai_scorer.scorer_config().get("backend")
-    log.info("art-mode tv=%s keywords=%r backend=%s exclude_last=%s",
-             tv_ip, keywords, backend, exclude_id)
+    log.info("art-mode tv=%s keywords=%r backend=%s excluding=%d recent",
+             tv_ip, keywords, backend, len(exclude_ids))
     try:
-        image, photo = unsplash.fetch_art_image(access_key, keywords, exclude_id=exclude_id)
+        image, photo = unsplash.fetch_art_image(access_key, keywords, exclude_ids=exclude_ids)
     except ValueError as e:
         log.warning("art-mode tv=%s rejected: %s", tv_ip, e)
         return jsonify(error=str(e)), 400

@@ -49,6 +49,29 @@ def test_search_photos_raises_on_non_200():
             pass
 
 
+def test_fetch_random_pool_returns_ranked_list():
+    # The random endpoint returns a bare list (with count>=1), not a results dict.
+    with patch("unsplash.requests.get", return_value=_Resp(200, [{"id": "a"}, {"id": "b"}])):
+        results = unsplash.fetch_random_pool("key", "Kyoto")
+    assert [c["id"] for c in results] == ["a", "b"]
+    assert results[0]["_rank"] == 0 and results[1]["_rank"] == 1
+
+
+def test_fetch_random_pool_wraps_single_dict():
+    with patch("unsplash.requests.get", return_value=_Resp(200, {"id": "solo"})):
+        results = unsplash.fetch_random_pool("key", "Kyoto")
+    assert [c["id"] for c in results] == ["solo"]
+
+
+def test_fetch_random_pool_raises_on_non_200():
+    with patch("unsplash.requests.get", return_value=_Resp(500, [])):
+        try:
+            unsplash.fetch_random_pool("key", "Kyoto")
+            assert False, "expected UnsplashError"
+        except unsplash.UnsplashError:
+            pass
+
+
 def test_heuristic_scorer_prefers_better_photo():
     good = {"_rank": 0, "likes": 500, "width": 5000, "height": 2813}
     poor = {"_rank": 8, "likes": 3, "width": 4000, "height": 3000}
@@ -85,9 +108,9 @@ def test_select_best_picks_highest_scored():
     assert chosen["id"] == "b"
 
 
-def test_select_best_excludes_last_shown():
+def test_select_best_excludes_recent():
     cands = [_cand("b", 0, likes=999), _cand("c", 1, likes=800)]
-    chosen = unsplash.select_best(cands, exclude_id="b", rng=_FirstRng)
+    chosen = unsplash.select_best(cands, exclude_ids={"b"}, rng=_FirstRng)
     assert chosen["id"] == "c"
 
 
@@ -98,7 +121,7 @@ def test_select_best_returns_none_when_all_below_min_res():
 
 def test_select_best_falls_back_to_best_when_only_option_is_excluded():
     cands = [_cand("b", 0, likes=999)]
-    chosen = unsplash.select_best(cands, exclude_id="b", rng=_FirstRng)
+    chosen = unsplash.select_best(cands, exclude_ids={"b"}, rng=_FirstRng)
     assert chosen["id"] == "b"
 
 
@@ -163,29 +186,39 @@ def _photo(id="p1", width=5000, height=2813):
                       "download_location": "https://api.unsplash.com/photos/p1/download"}}
 
 
-def test_fetch_art_image_uses_search_and_returns_meta():
-    search = _Resp(200, {"results": [_photo()]})
+def test_fetch_art_image_uses_random_pool_by_default():
+    pool = _Resp(200, [_photo()])          # random endpoint returns a list
     dl = _Resp(200, {})
     photo = _Resp(200, content=_png_bytes())
-    with patch("unsplash.requests.get", side_effect=[search, dl, photo]):
+    with patch("unsplash.requests.get", side_effect=[pool, dl, photo]):
         data, meta = unsplash.fetch_art_image("key", "Kyoto", size=(320, 180))
     assert Image.open(BytesIO(data)).size == (320, 180)
     assert meta["id"] == "p1" and meta["photographer"] == "Jane"
 
 
-def test_fetch_art_image_excludes_last_shown():
-    two = _Resp(200, {"results": [_photo("p1"), _photo("p2")]})
+def test_fetch_art_image_relevant_strategy_uses_search():
+    search = _Resp(200, {"results": [_photo()]})
+    dl = _Resp(200, {})
+    photo = _Resp(200, content=_png_bytes())
+    with patch("unsplash.requests.get", side_effect=[search, dl, photo]):
+        data, meta = unsplash.fetch_art_image("key", "Kyoto", size=(320, 180), strategy="relevant")
+    assert meta["id"] == "p1"
+
+
+def test_fetch_art_image_excludes_recent():
+    two = _Resp(200, [_photo("p1"), _photo("p2")])   # random pool of two
     dl = _Resp(200, {})
     photo = _Resp(200, content=_png_bytes())
     with patch("unsplash.requests.get", side_effect=[two, dl, photo]):
-        _, meta = unsplash.fetch_art_image("key", "Kyoto", size=(320, 180), exclude_id="p1", rng=_FirstRng)
+        _, meta = unsplash.fetch_art_image("key", "Kyoto", size=(320, 180),
+                                           exclude_ids=["p1"], rng=_FirstRng)
     assert meta["id"] == "p2"
 
 
-def test_fetch_art_image_falls_back_to_random_on_empty_search():
-    empty = _Resp(200, {"results": []})
-    rand = _Resp(200, _photo())
-    dl = _Resp(200, {})          # download trigger fires on the random path too
+def test_fetch_art_image_falls_back_to_single_random_on_empty_pool():
+    empty = _Resp(200, [])       # random pool returns nothing usable
+    rand = _Resp(200, _photo())  # single-random last resort
+    dl = _Resp(200, {})
     photo = _Resp(200, content=_png_bytes())
     with patch("unsplash.requests.get", side_effect=[empty, rand, dl, photo]):
         data, meta = unsplash.fetch_art_image("key", "Kyoto", size=(320, 180))
@@ -203,7 +236,7 @@ def test_fetch_art_image_raises_on_empty_keywords():
 def test_fetch_art_image_raises_when_chosen_has_no_full_url():
     # candidate passes the resolution gate but has no urls.full → clean UnsplashError
     bad = {"id": "p1", "width": 5000, "height": 2813, "_rank": 0, "urls": {}, "links": {}}
-    with patch("unsplash.requests.get", side_effect=[_Resp(200, {"results": [bad]})]):
+    with patch("unsplash.requests.get", side_effect=[_Resp(200, [bad])]):
         try:
             unsplash.fetch_art_image("key", "Kyoto")
             assert False, "expected UnsplashError"

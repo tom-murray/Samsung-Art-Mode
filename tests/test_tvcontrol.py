@@ -311,15 +311,26 @@ def test_diagnose_collects_rest_and_both_ports(tmp_path):
     assert report["ports"]["8001"]["supported"] is False
 
 
-def test_record_and_read_last_photo(tmp_path):
-    assert tvcontrol.last_photo("1.2.3.4", token_dir=str(tmp_path)) is None
+def test_record_and_read_recent_photos(tmp_path):
+    assert tvcontrol.recent_photos("1.2.3.4", token_dir=str(tmp_path)) == []
     tvcontrol.record_photo("1.2.3.4", "photo-9", token_dir=str(tmp_path))
-    assert tvcontrol.last_photo("1.2.3.4", token_dir=str(tmp_path)) == "photo-9"
+    assert tvcontrol.recent_photos("1.2.3.4", token_dir=str(tmp_path)) == ["photo-9"]
 
 
 def test_record_photo_ignores_empty_id(tmp_path):
     tvcontrol.record_photo("1.2.3.4", None, token_dir=str(tmp_path))
-    assert tvcontrol.last_photo("1.2.3.4", token_dir=str(tmp_path)) is None
+    assert tvcontrol.recent_photos("1.2.3.4", token_dir=str(tmp_path)) == []
+
+
+def test_record_photo_keeps_rolling_deduped_history(tmp_path, monkeypatch):
+    monkeypatch.setattr(tvcontrol, "HISTORY_SIZE", 3)
+    for pid in ["a", "b", "c", "d"]:
+        tvcontrol.record_photo("1.2.3.4", pid, token_dir=str(tmp_path))
+    # capped at HISTORY_SIZE, oldest ("a") dropped
+    assert tvcontrol.recent_photos("1.2.3.4", token_dir=str(tmp_path)) == ["b", "c", "d"]
+    # re-showing an existing id moves it to the most-recent end (dedupe)
+    tvcontrol.record_photo("1.2.3.4", "b", token_dir=str(tmp_path))
+    assert tvcontrol.recent_photos("1.2.3.4", token_dir=str(tmp_path)) == ["c", "d", "b"]
 
 
 def test_apply_art_logs_upload(monkeypatch, caplog):

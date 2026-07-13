@@ -1,5 +1,6 @@
 import logging
 import math
+import os
 import random
 
 import requests
@@ -17,6 +18,9 @@ TOP_K = 5
 SHORTLIST = 8
 MIN_WIDTH = 3000
 TARGET_ASPECT = 16 / 9
+# "random" draws a fresh random pool each request (variety, relies on the LLM
+# gate for quality); "relevant" uses the deterministic relevance search.
+DEFAULT_STRATEGY = os.environ.get("UNSPLASH_STRATEGY", "random")
 
 
 class UnsplashError(Exception):
@@ -28,20 +32,24 @@ def build_query(keywords: str) -> str:
 
 
 def fetch_art_image(access_key: str, keywords: str, size=(3840, 2160),
-                    exclude_id=None, rng=random):
+                    exclude_ids=None, rng=random, strategy=None):
     query = build_query(keywords)
     if not query:
         raise ValueError("keywords must contain at least one non-empty term")
 
+    strategy = strategy or DEFAULT_STRATEGY
     chosen = None
     try:
-        candidates = search_photos(access_key, query)
-        chosen = choose_photo(candidates, query, exclude_id=exclude_id, rng=rng)
+        if strategy == "relevant":
+            candidates = search_photos(access_key, query)
+        else:
+            candidates = fetch_random_pool(access_key, query)
+        chosen = choose_photo(candidates, query, exclude_ids=exclude_ids, rng=rng)
     except UnsplashError as e:
-        log.warning("Unsplash search failed (%r); falling back to random", e)
+        log.warning("Unsplash %s pool failed (%r); falling back to single random", strategy, e)
 
     if chosen is None:
-        log.info("random fallback used for q=%r", query)
+        log.info("single random fallback used for q=%r", query)
         chosen = _fetch_random(access_key, query)
 
     image_url = (chosen.get("urls", {}) or {}).get("full")
@@ -93,6 +101,34 @@ def search_photos(access_key: str, query: str, per_page: int = CANDIDATE_POOL) -
     return results
 
 
+def fetch_random_pool(access_key: str, query: str, count: int = CANDIDATE_POOL) -> list:
+    """Fetch a pool of RANDOM photos matching the query (max 30 per Unsplash).
+
+    Unlike the deterministic relevance search, this returns a different set each
+    call — variety comes from here, quality control from the vision scorer that
+    ranks the pool afterwards."""
+    resp = requests.get(
+        UNSPLASH_URL,
+        params={
+            "query": query,
+            "orientation": "landscape",
+            "content_filter": "high",
+            "count": min(count, 30),
+        },
+        headers={"Authorization": f"Client-ID {access_key}"},
+        timeout=15,
+    )
+    if resp.status_code != 200:
+        raise UnsplashError(f"Unsplash random returned {resp.status_code}: {resp.text[:200]}")
+    data = resp.json()
+    # With count>=1 Unsplash returns a list; be defensive if a single dict comes back.
+    results = data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
+    for i, c in enumerate(results):
+        c["_rank"] = i
+    log.info("random pool q=%r status=%d count=%d", query, resp.status_code, len(results))
+    return results
+
+
 def _meets_min(c: dict) -> bool:
     w, h = c.get("width", 0) or 0, c.get("height", 0) or 0
     return w >= MIN_WIDTH and w >= h
@@ -119,18 +155,20 @@ def rank_candidates(candidates, scorer=heuristic_scorer):
     return ranked
 
 
-def pick_from_ranked(ranked, *, exclude_id=None, top_k=TOP_K, rng=random):
-    """Choose among the top_k highest-scored, avoiding exclude_id when possible."""
+def pick_from_ranked(ranked, *, exclude_ids=None, top_k=TOP_K, rng=random):
+    """Choose among the top_k highest-scored, avoiding recently-shown ids when
+    possible (falls back to the full top_k if all of them were recent)."""
     if not ranked:
         return None
+    exclude = set(exclude_ids or ())
     top = [c for c, _ in ranked[:top_k]]
-    pool = [c for c in top if c.get("id") != exclude_id] or top
+    pool = [c for c in top if c.get("id") not in exclude] or top
     return rng.choice(pool)
 
 
-def select_best(candidates, exclude_id=None, scorer=heuristic_scorer, top_k=TOP_K, rng=random):
+def select_best(candidates, exclude_ids=None, scorer=heuristic_scorer, top_k=TOP_K, rng=random):
     return pick_from_ranked(rank_candidates(candidates, scorer),
-                            exclude_id=exclude_id, top_k=top_k, rng=rng)
+                            exclude_ids=exclude_ids, top_k=top_k, rng=rng)
 
 
 def _photo_meta(c: dict) -> dict:
@@ -165,7 +203,7 @@ def _download_and_resize(image_url: str, size) -> bytes:
     return out.getvalue()
 
 
-def choose_photo(candidates, destination, *, exclude_id=None, rng=random, config=None):
+def choose_photo(candidates, destination, *, exclude_ids=None, rng=random, config=None):
     """Two-stage pick: heuristic pre-filter to a shortlist, then score by the
     configured backend (vision when set, else heuristic). Logs each funnel stage."""
     total = len(candidates or [])
@@ -193,9 +231,10 @@ def choose_photo(candidates, destination, *, exclude_id=None, rng=random, config
     log.info("shortlist(%d/%d) backend=%s: %s (below-min-res=%d, beyond-shortlist=%d)",
              len(shortlist), total, backend, scored, below_min, beyond)
 
-    chosen = pick_from_ranked(ranked, exclude_id=exclude_id, top_k=TOP_K, rng=rng)
+    chosen = pick_from_ranked(ranked, exclude_ids=exclude_ids, top_k=TOP_K, rng=rng)
     if chosen is not None:
         cs = next((s for c, s in ranked if c is chosen), None)
-        log.info("picked %s score=%s (top%d, excluded_last=%s) [backend=%s]",
-                 chosen.get("id"), f"{cs:.2f}" if cs is not None else "?", TOP_K, exclude_id, backend)
+        log.info("picked %s score=%s (top%d, excluded_recent=%d) [backend=%s]",
+                 chosen.get("id"), f"{cs:.2f}" if cs is not None else "?",
+                 TOP_K, len(set(exclude_ids or ())), backend)
     return chosen
