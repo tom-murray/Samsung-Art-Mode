@@ -340,6 +340,13 @@ among the top few, excluding photos recently shown on that TV. If the endpoint
 is unset or unreachable it falls back to the heuristics — art updates never fail
 because of the scorer.
 
+**Tested with** the lightweight [`zai-org/glm-4.6v-flash`](https://lmstudio.ai/models/zai-org/glm-4.6v-flash)
+vision model in LM Studio — a small, fast 9B model that scores each image in
+~1.5–4s. Note it's a *reasoning* model: it spends tokens "thinking" before it
+answers, so keep `SCORER_MAX_TOKENS` generous (the `1000` default is fine) or it
+gets truncated (`finish=length` in the trace) and never emits a score. Any
+OpenAI-compatible vision model works; non-reasoning models are cheaper on tokens.
+
 ### Request tracing
 
 Every art-mode request emits a timestamped, correlation-id-tagged trace to the
