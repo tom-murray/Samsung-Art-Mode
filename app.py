@@ -1,13 +1,26 @@
 import logging
 import os
+import time
 
 from flask import Flask, jsonify, request
 
+import openai_scorer
+import tracing
 import tvcontrol
 import unsplash
 
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
+tracing.configure_logging()
+log = logging.getLogger("app")
+# The StreamHandler installed by configure_logging() already stamps request_id on
+# every record in production. This per-logger filter is only so records still carry
+# request_id for handlers that bypass ours (e.g. pytest's caplog).
+log.addFilter(tracing.RequestIdFilter())
+
+
+@app.before_request
+def _tag_request():
+    tracing.new_request_id()
 
 
 @app.get("/health")
@@ -41,29 +54,41 @@ def pair(tv_ip):
 
 @app.post("/tvs/<tv_ip>/art-mode")
 def art_mode(tv_ip):
+    start = time.monotonic()
     data = request.get_json(silent=True) or {}
     keywords = data.get("keywords")
     access_key = data.get("access_key") or os.environ.get("UNSPLASH_ACCESS_KEY")
 
     if not keywords:
+        log.warning("art-mode tv=%s rejected: missing keywords", tv_ip)
         return jsonify(error="Missing required parameter: keywords"), 400
     if not access_key:
+        log.warning("art-mode tv=%s rejected: missing access_key", tv_ip)
         return jsonify(error="Missing Unsplash access_key (body or UNSPLASH_ACCESS_KEY env)"), 400
 
+    exclude_ids = tvcontrol.recent_photos(tv_ip)
+    backend = openai_scorer.scorer_config().get("backend")
+    log.info("art-mode tv=%s keywords=%r backend=%s excluding=%d recent",
+             tv_ip, keywords, backend, len(exclude_ids))
     try:
-        image = unsplash.fetch_art_image(access_key, keywords)
+        image, photo = unsplash.fetch_art_image(access_key, keywords, exclude_ids=exclude_ids)
     except ValueError as e:
+        log.warning("art-mode tv=%s rejected: %s", tv_ip, e)
         return jsonify(error=str(e)), 400
     except unsplash.UnsplashError as e:
+        log.warning("art-mode aborted: %s", e)
         return jsonify(error=str(e)), 502
 
     try:
         result = tvcontrol.apply_art(tv_ip, image, mac=data.get("mac"))
     except Exception as e:  # noqa: BLE001
-        logging.exception("art-mode failed for %s", tv_ip)
+        log.exception("art-mode failed for %s", tv_ip)
         return jsonify(error=str(e)), 500
 
-    return jsonify(status="success", message=f"Art updated from keywords: {keywords}", **result), 200
+    tvcontrol.record_photo(tv_ip, photo.get("id"))
+    log.info("done success in %.1fs", time.monotonic() - start)
+    return jsonify(status="success", message=f"Art updated from keywords: {keywords}",
+                   photo=photo, **result), 200
 
 
 if __name__ == "__main__":

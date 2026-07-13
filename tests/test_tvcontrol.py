@@ -309,3 +309,50 @@ def test_diagnose_collects_rest_and_both_ports(tmp_path):
     assert report["rest"]["modelName"] == "UE43LS003"
     assert report["ports"]["8002"]["supported"] is True
     assert report["ports"]["8001"]["supported"] is False
+
+
+def test_record_and_read_recent_photos(tmp_path):
+    assert tvcontrol.recent_photos("1.2.3.4", token_dir=str(tmp_path)) == []
+    tvcontrol.record_photo("1.2.3.4", "photo-9", token_dir=str(tmp_path))
+    assert tvcontrol.recent_photos("1.2.3.4", token_dir=str(tmp_path)) == ["photo-9"]
+
+
+def test_record_photo_ignores_empty_id(tmp_path):
+    tvcontrol.record_photo("1.2.3.4", None, token_dir=str(tmp_path))
+    assert tvcontrol.recent_photos("1.2.3.4", token_dir=str(tmp_path)) == []
+
+
+def test_record_photo_keeps_rolling_deduped_history(tmp_path, monkeypatch):
+    monkeypatch.setattr(tvcontrol, "HISTORY_SIZE", 3)
+    for pid in ["a", "b", "c", "d"]:
+        tvcontrol.record_photo("1.2.3.4", pid, token_dir=str(tmp_path))
+    # capped at HISTORY_SIZE, oldest ("a") dropped
+    assert tvcontrol.recent_photos("1.2.3.4", token_dir=str(tmp_path)) == ["b", "c", "d"]
+    # re-showing an existing id moves it to the most-recent end (dedupe)
+    tvcontrol.record_photo("1.2.3.4", "b", token_dir=str(tmp_path))
+    assert tvcontrol.recent_photos("1.2.3.4", token_dir=str(tmp_path)) == ["c", "d", "b"]
+
+
+def test_history_size_zero_disables_history(tmp_path, monkeypatch):
+    # HISTORY_SIZE=0 must store nothing, not grow unbounded via history[-0:].
+    monkeypatch.setattr(tvcontrol, "HISTORY_SIZE", 0)
+    tvcontrol.record_photo("1.2.3.4", "a", token_dir=str(tmp_path))
+    tvcontrol.record_photo("1.2.3.4", "b", token_dir=str(tmp_path))
+    assert tvcontrol.recent_photos("1.2.3.4", token_dir=str(tmp_path)) == []
+
+
+def test_apply_art_logs_upload(monkeypatch, caplog):
+    import tvcontrol
+
+    class _Art:
+        def get_current(self): return {"content_id": "OLD"}
+        def upload(self, *a, **k): return "NEW-1"
+        def select_image(self, *a, **k): return None
+        def delete(self, *a, **k): return None
+        def close(self): pass
+
+    monkeypatch.setattr(tvcontrol, "connect", lambda ip, td, mac=None: (_Art(), 8002))
+    with caplog.at_level("INFO"):
+        result = tvcontrol.apply_art("1.2.3.4", b"jpeg")
+    assert result == {"uploaded_id": "NEW-1", "port": 8002}
+    assert any("uploaded=NEW-1" in r.message and "8002" in r.message for r in caplog.records)

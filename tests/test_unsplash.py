@@ -32,32 +32,216 @@ class _Resp:
         return self._json
 
 
-def test_fetch_art_image_returns_jpeg_bytes_at_target_size():
-    meta = _Resp(200, {"urls": {"full": "https://img.example/full"}})
+def test_search_photos_returns_ranked_results():
+    payload = {"results": [{"id": "a"}, {"id": "b"}]}
+    with patch("unsplash.requests.get", return_value=_Resp(200, payload)):
+        results = unsplash.search_photos("key", "Kyoto")
+    assert [c["id"] for c in results] == ["a", "b"]
+    assert results[0]["_rank"] == 0 and results[1]["_rank"] == 1
+
+
+def test_search_photos_raises_on_non_200():
+    with patch("unsplash.requests.get", return_value=_Resp(403, {})):
+        try:
+            unsplash.search_photos("key", "Kyoto")
+            assert False, "expected UnsplashError"
+        except unsplash.UnsplashError:
+            pass
+
+
+def test_fetch_random_pool_returns_ranked_list():
+    # The random endpoint returns a bare list (with count>=1), not a results dict.
+    with patch("unsplash.requests.get", return_value=_Resp(200, [{"id": "a"}, {"id": "b"}])):
+        results = unsplash.fetch_random_pool("key", "Kyoto")
+    assert [c["id"] for c in results] == ["a", "b"]
+    assert results[0]["_rank"] == 0 and results[1]["_rank"] == 1
+
+
+def test_fetch_random_pool_wraps_single_dict():
+    with patch("unsplash.requests.get", return_value=_Resp(200, {"id": "solo"})):
+        results = unsplash.fetch_random_pool("key", "Kyoto")
+    assert [c["id"] for c in results] == ["solo"]
+
+
+def test_fetch_random_pool_raises_on_non_200():
+    with patch("unsplash.requests.get", return_value=_Resp(500, [])):
+        try:
+            unsplash.fetch_random_pool("key", "Kyoto")
+            assert False, "expected UnsplashError"
+        except unsplash.UnsplashError:
+            pass
+
+
+def test_heuristic_scorer_prefers_better_photo():
+    good = {"_rank": 0, "likes": 500, "width": 5000, "height": 2813}
+    poor = {"_rank": 8, "likes": 3, "width": 4000, "height": 3000}
+    assert unsplash.heuristic_scorer(good) > unsplash.heuristic_scorer(poor)
+
+
+def test_meets_min_rejects_low_res_and_portrait():
+    assert unsplash._meets_min({"width": 5000, "height": 2813}) is True
+    assert unsplash._meets_min({"width": 2000, "height": 1200}) is False
+    assert unsplash._meets_min({"width": 3000, "height": 4000}) is False
+
+
+class _FirstRng:
+    """Deterministic stand-in for the random module: always the first item."""
+    @staticmethod
+    def choice(seq):
+        return seq[0]
+
+
+class _LastRng:
+    """Deterministic stand-in: always the last item of the pool."""
+    @staticmethod
+    def choice(seq):
+        return seq[-1]
+
+
+def _cand(id, rank, likes=100, width=5000, height=2813):
+    return {"id": id, "_rank": rank, "likes": likes, "width": width, "height": height}
+
+
+def test_select_best_picks_highest_scored():
+    cands = [_cand("a", 3, likes=1), _cand("b", 0, likes=999)]
+    chosen = unsplash.select_best(cands, rng=_FirstRng)
+    assert chosen["id"] == "b"
+
+
+def test_select_best_excludes_recent():
+    cands = [_cand("b", 0, likes=999), _cand("c", 1, likes=800)]
+    chosen = unsplash.select_best(cands, exclude_ids={"b"}, rng=_FirstRng)
+    assert chosen["id"] == "c"
+
+
+def test_select_best_returns_none_when_all_below_min_res():
+    cands = [{"id": "x", "_rank": 0, "likes": 5, "width": 1000, "height": 600}]
+    assert unsplash.select_best(cands, rng=_FirstRng) is None
+
+
+def test_select_best_falls_back_to_best_when_only_option_is_excluded():
+    cands = [_cand("b", 0, likes=999)]
+    chosen = unsplash.select_best(cands, exclude_ids={"b"}, rng=_FirstRng)
+    assert chosen["id"] == "b"
+
+
+def test_photo_meta_extracts_attribution():
+    c = {"id": "p1", "alt_description": "kyoto dusk",
+         "user": {"name": "Jane"}, "links": {"html": "https://unsplash.com/photos/p1"}}
+    meta = unsplash._photo_meta(c)
+    assert meta == {"id": "p1", "description": "kyoto dusk",
+                    "photographer": "Jane", "source_url": "https://unsplash.com/photos/p1"}
+
+
+def test_trigger_download_is_best_effort():
+    with patch("unsplash.requests.get", side_effect=RuntimeError("boom")):
+        unsplash.trigger_download("key", "https://api.unsplash.com/photos/p1/download")
+
+
+def test_download_and_resize_returns_target_jpeg():
     photo = _Resp(200, content=_png_bytes())
-    with patch("unsplash.requests.get", side_effect=[meta, photo]):
-        data = unsplash.fetch_art_image("key", "Dubai", size=(320, 180))
+    with patch("unsplash.requests.get", return_value=photo):
+        data = unsplash._download_and_resize("https://img.example/full", (320, 180))
     img = Image.open(BytesIO(data))
-    assert img.format == "JPEG"
-    assert img.size == (320, 180)
+    assert img.format == "JPEG" and img.size == (320, 180)
 
 
-def test_fetch_art_image_raises_on_non_200_meta():
-    with patch("unsplash.requests.get", side_effect=[_Resp(403, {})]):
-        try:
-            unsplash.fetch_art_image("key", "Dubai")
-            assert False, "expected UnsplashError"
-        except unsplash.UnsplashError:
-            pass
+def test_choose_photo_heuristic_when_not_configured():
+    cands = [_cand("a", 3, likes=1), _cand("b", 0, likes=999)]
+    chosen = unsplash.choose_photo(cands, "Kyoto", rng=_FirstRng, config={"backend": "heuristic"})
+    assert chosen["id"] == "b"
 
 
-def test_fetch_art_image_raises_on_missing_urls():
-    with patch("unsplash.requests.get", side_effect=[_Resp(200, {"errors": ["bad"]})]):
-        try:
-            unsplash.fetch_art_image("key", "Dubai")
-            assert False, "expected UnsplashError"
-        except unsplash.UnsplashError:
-            pass
+def test_choose_photo_uses_vision_scorer_when_configured():
+    cands = [_cand("a", 0, likes=999), _cand("b", 1, likes=1)]
+    fake_scorer = lambda c: 9.0 if c["id"] == "b" else 1.0
+    cfg = {"backend": "openai", "url": "http://h/v1", "model": "m"}
+    with patch("unsplash.make_vision_scorer", return_value=fake_scorer):
+        chosen = unsplash.choose_photo(cands, "Kyoto", rng=_FirstRng, config=cfg)
+    assert chosen["id"] == "b"
+
+
+def test_choose_photo_none_when_all_below_min_res():
+    cands = [{"id": "x", "_rank": 0, "likes": 5, "width": 1000, "height": 600}]
+    assert unsplash.choose_photo(cands, "Kyoto", rng=_FirstRng, config={"backend": "heuristic"}) is None
+
+
+def test_choose_photo_drops_candidates_below_top_k():
+    # 6 eligible candidates scored a>b>c>d>e>f; only the top TOP_K (5) may be
+    # selected, so the worst ("f") must never be picked even with a pool-last rng.
+    cands = [_cand(x, 0) for x in "abcdef"]
+    scores = {"a": 6, "b": 5, "c": 4, "d": 3, "e": 2, "f": 1}
+    fake = lambda c: scores[c["id"]]
+    cfg = {"backend": "openai", "url": "http://h/v1", "model": "m"}
+    with patch("unsplash.make_vision_scorer", return_value=fake):
+        chosen = unsplash.choose_photo(cands, "Kyoto", rng=_LastRng, config=cfg)
+    assert chosen["id"] == "e"  # last of the top-5; "f" is excluded by scoring
+
+
+def _photo(id="p1", width=5000, height=2813):
+    return {"id": id, "width": width, "height": height, "likes": 100, "_rank": 0,
+            "alt_description": "scene", "user": {"name": "Jane"},
+            "urls": {"full": "https://img.example/full"},
+            "links": {"html": "https://unsplash.com/photos/p1",
+                      "download_location": "https://api.unsplash.com/photos/p1/download"}}
+
+
+def test_fetch_art_image_random_strategy_uses_pool():
+    pool = _Resp(200, [_photo()])          # random endpoint returns a list
+    dl = _Resp(200, {})
+    photo = _Resp(200, content=_png_bytes())
+    with patch("unsplash.requests.get", side_effect=[pool, dl, photo]):
+        data, meta = unsplash.fetch_art_image("key", "Kyoto", size=(320, 180), strategy="random")
+    assert Image.open(BytesIO(data)).size == (320, 180)
+    assert meta["id"] == "p1" and meta["photographer"] == "Jane"
+
+
+def test_default_strategy_env_wins(monkeypatch):
+    monkeypatch.setenv("UNSPLASH_STRATEGY", "relevant")
+    assert unsplash._default_strategy() == "relevant"
+
+
+def test_default_strategy_random_only_when_scorer_configured(monkeypatch):
+    monkeypatch.delenv("UNSPLASH_STRATEGY", raising=False)
+    monkeypatch.setenv("SCORER_BACKEND", "openai")
+    monkeypatch.setenv("SCORER_URL", "http://h/v1")
+    monkeypatch.setenv("SCORER_MODEL", "m")
+    assert unsplash._default_strategy() == "random"
+
+
+def test_default_strategy_relevant_without_scorer(monkeypatch):
+    monkeypatch.delenv("UNSPLASH_STRATEGY", raising=False)
+    monkeypatch.setenv("SCORER_BACKEND", "heuristic")
+    assert unsplash._default_strategy() == "relevant"
+
+
+def test_fetch_art_image_relevant_strategy_uses_search():
+    search = _Resp(200, {"results": [_photo()]})
+    dl = _Resp(200, {})
+    photo = _Resp(200, content=_png_bytes())
+    with patch("unsplash.requests.get", side_effect=[search, dl, photo]):
+        data, meta = unsplash.fetch_art_image("key", "Kyoto", size=(320, 180), strategy="relevant")
+    assert meta["id"] == "p1"
+
+
+def test_fetch_art_image_excludes_recent():
+    two = _Resp(200, [_photo("p1"), _photo("p2")])   # random pool of two
+    dl = _Resp(200, {})
+    photo = _Resp(200, content=_png_bytes())
+    with patch("unsplash.requests.get", side_effect=[two, dl, photo]):
+        _, meta = unsplash.fetch_art_image("key", "Kyoto", size=(320, 180),
+                                           exclude_ids=["p1"], rng=_FirstRng, strategy="random")
+    assert meta["id"] == "p2"
+
+
+def test_fetch_art_image_falls_back_to_single_random_on_empty_pool():
+    empty = _Resp(200, [])       # random pool returns nothing usable
+    rand = _Resp(200, _photo())  # single-random last resort
+    dl = _Resp(200, {})
+    photo = _Resp(200, content=_png_bytes())
+    with patch("unsplash.requests.get", side_effect=[empty, rand, dl, photo]):
+        data, meta = unsplash.fetch_art_image("key", "Kyoto", size=(320, 180))
+    assert meta["id"] == "p1"
 
 
 def test_fetch_art_image_raises_on_empty_keywords():
@@ -66,3 +250,64 @@ def test_fetch_art_image_raises_on_empty_keywords():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+def test_fetch_art_image_raises_when_chosen_has_no_full_url():
+    # candidate passes the resolution gate but has no urls.full → clean UnsplashError
+    bad = {"id": "p1", "width": 5000, "height": 2813, "_rank": 0, "urls": {}, "links": {}}
+    with patch("unsplash.requests.get", side_effect=[_Resp(200, [bad])]):
+        try:
+            unsplash.fetch_art_image("key", "Kyoto", strategy="random")
+            assert False, "expected UnsplashError"
+        except unsplash.UnsplashError:
+            pass
+
+
+def test_fetch_art_image_raises_when_search_and_random_both_fail():
+    bad_search = _Resp(500, {})
+    bad_random = _Resp(401, {})
+    with patch("unsplash.requests.get", side_effect=[bad_search, bad_random]):
+        try:
+            unsplash.fetch_art_image("key", "Kyoto")
+            assert False, "expected UnsplashError"
+        except unsplash.UnsplashError:
+            pass
+
+
+def test_rank_candidates_sorts_by_score_desc_and_filters_min_res():
+    good = _cand("b", 0, likes=999)
+    poor = _cand("a", 3, likes=1)
+    tiny = {"id": "x", "_rank": 0, "likes": 5, "width": 1000, "height": 600}
+    ranked = unsplash.rank_candidates([poor, good, tiny], unsplash.heuristic_scorer)
+    assert [c["id"] for c, _ in ranked] == ["b", "a"]  # tiny dropped, b outranks a
+    assert ranked[0][1] > ranked[1][1]
+
+
+def test_pick_from_ranked_respects_top_k_and_exclude():
+    ranked = [(_cand(x, 0), score) for x, score in
+              [("a", 6), ("b", 5), ("c", 4), ("d", 3), ("e", 2), ("f", 1)]]
+    # last of top-5 with a pool-last rng is "e"; "f" is outside top_k
+    chosen = unsplash.pick_from_ranked(ranked, top_k=5, rng=_LastRng)
+    assert chosen["id"] == "e"
+
+
+def test_pick_from_ranked_none_when_empty():
+    assert unsplash.pick_from_ranked([], rng=_FirstRng) is None
+
+
+def test_choose_photo_logs_funnel(caplog):
+    cands = [_cand("a", 0, likes=999), _cand("b", 1, likes=1)]
+    with caplog.at_level("INFO"):
+        unsplash.choose_photo(cands, "Kyoto", rng=_FirstRng, config={"backend": "heuristic"})
+    text = " ".join(r.message for r in caplog.records)
+    assert "shortlist" in text and "picked" in text
+
+
+def test_choose_photo_logs_full_dropoff(caplog):
+    good = [_cand(f"g{i}", i) for i in range(10)]  # 10 eligible, heuristic-sorted
+    tiny = [{"id": f"t{i}", "_rank": 0, "likes": 1, "width": 1000, "height": 600} for i in range(2)]
+    with caplog.at_level("INFO"):
+        unsplash.choose_photo(good + tiny, "Kyoto", rng=_FirstRng, config={"backend": "heuristic"})
+    line = next(r.message for r in caplog.records if "shortlist(" in r.message)
+    assert "below-min-res=2" in line
+    assert "beyond-shortlist=2" in line  # 10 eligible - 8 shortlist
