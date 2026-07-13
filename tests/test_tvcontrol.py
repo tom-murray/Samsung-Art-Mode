@@ -333,6 +333,14 @@ def test_record_photo_keeps_rolling_deduped_history(tmp_path, monkeypatch):
     assert tvcontrol.recent_photos("1.2.3.4", token_dir=str(tmp_path)) == ["c", "d", "b"]
 
 
+def test_history_size_zero_disables_history(tmp_path, monkeypatch):
+    # HISTORY_SIZE=0 must store nothing, not grow unbounded via history[-0:].
+    monkeypatch.setattr(tvcontrol, "HISTORY_SIZE", 0)
+    tvcontrol.record_photo("1.2.3.4", "a", token_dir=str(tmp_path))
+    tvcontrol.record_photo("1.2.3.4", "b", token_dir=str(tmp_path))
+    assert tvcontrol.recent_photos("1.2.3.4", token_dir=str(tmp_path)) == []
+
+
 def test_apply_art_logs_upload(monkeypatch, caplog):
     import tvcontrol
 

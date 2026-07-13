@@ -305,10 +305,12 @@ request failed), or `500` (uploading to the TV failed).
   `-v samsung-art-mode-tokens:/data/tokens`.
 - **`LOG_LEVEL`** (optional, default `INFO`) — log verbosity for the request
   trace. `DEBUG` adds raw LLM responses; base64 images are never logged.
-- **`UNSPLASH_STRATEGY`** (default `random`) — how the candidate pool is sourced.
-  `random` draws a fresh random set of matches each request (variety; relies on
-  the vision scorer for quality). `relevant` uses the deterministic relevance
-  search (most-iconic, but the same photos every time).
+- **`UNSPLASH_STRATEGY`** — how the candidate pool is sourced. `random` draws a
+  fresh random set of matches each request (variety; relies on the vision scorer
+  for quality). `relevant` uses the deterministic relevance search (most-iconic,
+  but the same photos every time). If unset, it defaults to `random` **only when
+  a vision scorer is configured** (so the scorer gates quality), otherwise
+  `relevant` — set it explicitly to override.
 - **`HISTORY_SIZE`** (default `20`) — how many recently-shown photos to remember
   per TV and exclude from the next pick, so the rotation doesn't repeat.
 
@@ -332,10 +334,11 @@ With `SCORER_BACKEND=openai` and `SCORER_URL`/`SCORER_MODEL` set, each candidate
 is scored 0–10 by the model as framed wall art of the destination: it rewards
 landmarks and points of interest, skylines and cityscapes, aerial shots,
 heritage sites and attractions, and penalises off-topic, people-as-subject,
-interiors, signage and dull composition. The pool is random by default, so the
-scorer is the quality gate — the highest-scoring, not-recently-shown photo wins.
-If the endpoint is unset or unreachable it falls back to the heuristics — art
-updates never fail because of the scorer.
+interiors, signage and dull composition. With a random pool the scorer is the
+quality gate: the pool is ranked by score and the pick is a small random choice
+among the top few, excluding photos recently shown on that TV. If the endpoint
+is unset or unreachable it falls back to the heuristics — art updates never fail
+because of the scorer.
 
 ### Request tracing
 

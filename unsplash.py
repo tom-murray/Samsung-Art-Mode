@@ -18,9 +18,20 @@ TOP_K = 5
 SHORTLIST = 8
 MIN_WIDTH = 3000
 TARGET_ASPECT = 16 / 9
-# "random" draws a fresh random pool each request (variety, relies on the LLM
-# gate for quality); "relevant" uses the deterministic relevance search.
-DEFAULT_STRATEGY = os.environ.get("UNSPLASH_STRATEGY", "random")
+def _default_strategy() -> str:
+    """Choose the pool strategy when the caller/env doesn't force one.
+
+    An explicit UNSPLASH_STRATEGY always wins. Otherwise use "random" (variety)
+    only when a vision scorer is active to gate quality; without one, fall back
+    to "relevant" so we still return iconic, relevance-ordered results rather
+    than a random loosely-matched pool with no quality gate.
+    """
+    env = os.environ.get("UNSPLASH_STRATEGY")
+    if env:
+        return env
+    cfg = scorer_config()
+    gated = cfg.get("backend") == "openai" and cfg.get("url") and cfg.get("model")
+    return "random" if gated else "relevant"
 
 
 class UnsplashError(Exception):
@@ -37,7 +48,7 @@ def fetch_art_image(access_key: str, keywords: str, size=(3840, 2160),
     if not query:
         raise ValueError("keywords must contain at least one non-empty term")
 
-    strategy = strategy or DEFAULT_STRATEGY
+    strategy = strategy or _default_strategy()
     chosen = None
     try:
         if strategy == "relevant":

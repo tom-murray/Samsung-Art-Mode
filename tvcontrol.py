@@ -402,7 +402,10 @@ def record_photo(ip: str, photo_id, token_dir: str = None) -> None:
     tdir = token_dir or DEFAULT_TOKEN_DIR
     history = [pid for pid in recent_photos(ip, tdir) if pid != photo_id]
     history.append(photo_id)
-    device_cache.remember(ip, {"recent_photos": history[-HISTORY_SIZE:]}, tdir)
+    # HISTORY_SIZE=0 disables history entirely; guard the slice so it doesn't
+    # become history[-0:] == the whole (unbounded) list.
+    capped = history[-HISTORY_SIZE:] if HISTORY_SIZE else []
+    device_cache.remember(ip, {"recent_photos": capped}, tdir)
 
 
 def _remember_device(ip: str, device: dict, token_dir: str) -> None:

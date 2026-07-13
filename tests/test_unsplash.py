@@ -186,14 +186,33 @@ def _photo(id="p1", width=5000, height=2813):
                       "download_location": "https://api.unsplash.com/photos/p1/download"}}
 
 
-def test_fetch_art_image_uses_random_pool_by_default():
+def test_fetch_art_image_random_strategy_uses_pool():
     pool = _Resp(200, [_photo()])          # random endpoint returns a list
     dl = _Resp(200, {})
     photo = _Resp(200, content=_png_bytes())
     with patch("unsplash.requests.get", side_effect=[pool, dl, photo]):
-        data, meta = unsplash.fetch_art_image("key", "Kyoto", size=(320, 180))
+        data, meta = unsplash.fetch_art_image("key", "Kyoto", size=(320, 180), strategy="random")
     assert Image.open(BytesIO(data)).size == (320, 180)
     assert meta["id"] == "p1" and meta["photographer"] == "Jane"
+
+
+def test_default_strategy_env_wins(monkeypatch):
+    monkeypatch.setenv("UNSPLASH_STRATEGY", "relevant")
+    assert unsplash._default_strategy() == "relevant"
+
+
+def test_default_strategy_random_only_when_scorer_configured(monkeypatch):
+    monkeypatch.delenv("UNSPLASH_STRATEGY", raising=False)
+    monkeypatch.setenv("SCORER_BACKEND", "openai")
+    monkeypatch.setenv("SCORER_URL", "http://h/v1")
+    monkeypatch.setenv("SCORER_MODEL", "m")
+    assert unsplash._default_strategy() == "random"
+
+
+def test_default_strategy_relevant_without_scorer(monkeypatch):
+    monkeypatch.delenv("UNSPLASH_STRATEGY", raising=False)
+    monkeypatch.setenv("SCORER_BACKEND", "heuristic")
+    assert unsplash._default_strategy() == "relevant"
 
 
 def test_fetch_art_image_relevant_strategy_uses_search():
@@ -211,7 +230,7 @@ def test_fetch_art_image_excludes_recent():
     photo = _Resp(200, content=_png_bytes())
     with patch("unsplash.requests.get", side_effect=[two, dl, photo]):
         _, meta = unsplash.fetch_art_image("key", "Kyoto", size=(320, 180),
-                                           exclude_ids=["p1"], rng=_FirstRng)
+                                           exclude_ids=["p1"], rng=_FirstRng, strategy="random")
     assert meta["id"] == "p2"
 
 
@@ -238,7 +257,7 @@ def test_fetch_art_image_raises_when_chosen_has_no_full_url():
     bad = {"id": "p1", "width": 5000, "height": 2813, "_rank": 0, "urls": {}, "links": {}}
     with patch("unsplash.requests.get", side_effect=[_Resp(200, [bad])]):
         try:
-            unsplash.fetch_art_image("key", "Kyoto")
+            unsplash.fetch_art_image("key", "Kyoto", strategy="random")
             assert False, "expected UnsplashError"
         except unsplash.UnsplashError:
             pass
