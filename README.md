@@ -273,9 +273,22 @@ The API will respond with a JSON object indicating success or failure.
   "status": "success",
   "message": "Art updated from keywords: Dubai,cityscape",
   "uploaded_id": "MY-F0032",
-  "port": 8002
+  "port": 8002,
+  "photo": {
+    "id": "abc123",
+    "description": "Dubai skyline at dusk",
+    "photographer": "Jane Doe",
+    "source_url": "https://unsplash.com/photos/abc123"
+  }
 }
 ```
+
+The image is chosen by **relevance + quality** — an Unsplash *search* (landscape,
+high-resolution, `content_filter=high`) rather than a random photo, skipping the
+image shown last on that TV so it varies. The `photo` block reports which image
+was used (with photographer attribution). Optionally an on-device vision model
+re-ranks the shortlist for the best framed-art look (see
+[Environment Variables](#environment-variables)).
 
 Errors are returned with an appropriate status code and an `error` field:
 `400` (missing `keywords`/`access_key` or empty keywords), `502` (Unsplash
@@ -290,6 +303,58 @@ request failed), or `500` (uploading to the TV failed).
   WebSocket auth tokens are saved after pairing. When running in Docker,
   mount a volume at this path so tokens survive container rebuilds, e.g.
   `-v samsung-art-mode-tokens:/data/tokens`.
+- **`LOG_LEVEL`** (optional, default `INFO`) — log verbosity for the request
+  trace. `DEBUG` adds raw LLM responses; base64 images are never logged.
+- **`UNSPLASH_STRATEGY`** — how the candidate pool is sourced. `random` draws a
+  fresh random set of matches each request (variety; relies on the vision scorer
+  for quality). `relevant` uses the deterministic relevance search (most-iconic,
+  but the same photos every time). If unset, it defaults to `random` **only when
+  a vision scorer is configured** (so the scorer gates quality), otherwise
+  `relevant` — set it explicitly to override.
+- **`HISTORY_SIZE`** (default `20`) — how many recently-shown photos to remember
+  per TV and exclude from the next pick, so the rotation doesn't repeat.
+
+### Vision scorer (optional)
+
+By default, images are ranked by quality heuristics (relevance, popularity,
+aspect ratio, resolution). You can optionally have a vision model re-rank the
+shortlist for the best "framed wall art" look. It works with **any
+OpenAI-compatible endpoint** (LM Studio, Ollama `/v1`, vLLM, LocalAI, OpenAI):
+
+- **`SCORER_BACKEND`** — `heuristic` (default) or `openai`.
+- **`SCORER_URL`** — the endpoint base, e.g. `http://<your-model-host>:1234/v1`.
+- **`SCORER_MODEL`** — the model name to request.
+- **`SCORER_API_KEY`** (optional) — sent as a Bearer token if set.
+- **`SCORER_TIMEOUT`** (default `30`) — per-image request timeout in seconds.
+- **`SCORER_MAX_TOKENS`** (default `1000`) — response token budget. Reasoning
+  models need enough headroom to finish thinking *and* emit the JSON answer; if
+  the trace shows `finish=length`, raise this.
+
+With `SCORER_BACKEND=openai` and `SCORER_URL`/`SCORER_MODEL` set, each candidate
+is scored 0–10 by the model as framed wall art of the destination: it rewards
+landmarks and points of interest, skylines and cityscapes, aerial shots,
+heritage sites and attractions, and penalises off-topic, people-as-subject,
+interiors, signage and dull composition. With a random pool the scorer is the
+quality gate: the pool is ranked by score and the pick is a small random choice
+among the top few, excluding photos recently shown on that TV. If the endpoint
+is unset or unreachable it falls back to the heuristics — art updates never fail
+because of the scorer.
+
+**Tested with** the lightweight [`zai-org/glm-4.6v-flash`](https://lmstudio.ai/models/zai-org/glm-4.6v-flash)
+vision model in LM Studio — a small, fast 9B model that scores each image in
+~1.5–4s. Note it's a *reasoning* model: it spends tokens "thinking" before it
+answers, so keep `SCORER_MAX_TOKENS` generous (the `1000` default is fine) or it
+gets truncated (`finish=length` in the trace) and never emits a score. Any
+OpenAI-compatible vision model works; non-reasoning models are cheaper on tokens.
+
+### Request tracing
+
+Every art-mode request emits a timestamped, correlation-id-tagged trace to the
+container logs (search → shortlist scores → per-image LLM score + reason → pick →
+upload → total time). Follow a single request with
+`docker logs samsung-art-mode | grep <id>`, where `<id>` is the `[id]` shown on each
+log line. Set `LOG_LEVEL=DEBUG` for extra detail (raw LLM responses); base64 image
+data is never logged.
 
 ## Diagnosing an unsupported TV
 

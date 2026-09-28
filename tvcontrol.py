@@ -13,6 +13,9 @@ import wol
 log = logging.getLogger(__name__)
 
 DEFAULT_TOKEN_DIR = os.environ.get("TOKEN_DIR", "/data/tokens")
+# How many recently-shown photos to remember per TV and exclude from the next
+# pick, so the rotation doesn't repeat itself.
+HISTORY_SIZE = int(os.environ.get("HISTORY_SIZE", "20"))
 CONTROL_PORTS = (8002, 8001)
 # Some TVs (e.g. 2019 Frame) accept a websocket connection but never answer an
 # art request, and the underlying library can wait forever. Cap every art call.
@@ -248,6 +251,7 @@ def apply_art(ip: str, image_bytes: bytes, token_dir: str = None, mac: str = Non
             if del_err:
                 log.warning("delete old image failed on %s (%s)", ip, del_err)
 
+        log.info("uploaded=%s port=%s", uploaded_id, session.port)
         return {"uploaded_id": uploaded_id, "port": session.port}
     finally:
         session.close()
@@ -383,6 +387,25 @@ def state(ip: str, token_dir: str = None):
         "name": device.get("name"),
         "error": art_err,
     }
+
+
+def recent_photos(ip: str, token_dir: str = None) -> list:
+    """The last HISTORY_SIZE photo ids shown on this TV, oldest first."""
+    return device_cache.recall(ip, token_dir or DEFAULT_TOKEN_DIR).get("recent_photos") or []
+
+
+def record_photo(ip: str, photo_id, token_dir: str = None) -> None:
+    """Append photo_id to this TV's rolling history (deduped, capped at
+    HISTORY_SIZE) so recently-shown photos can be excluded from the next pick."""
+    if not photo_id:
+        return
+    tdir = token_dir or DEFAULT_TOKEN_DIR
+    history = [pid for pid in recent_photos(ip, tdir) if pid != photo_id]
+    history.append(photo_id)
+    # HISTORY_SIZE=0 disables history entirely; guard the slice so it doesn't
+    # become history[-0:] == the whole (unbounded) list.
+    capped = history[-HISTORY_SIZE:] if HISTORY_SIZE else []
+    device_cache.remember(ip, {"recent_photos": capped}, tdir)
 
 
 def _remember_device(ip: str, device: dict, token_dir: str) -> None:

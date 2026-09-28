@@ -1,8 +1,37 @@
+import logging
+import math
+import os
+import random
+
 import requests
 from io import BytesIO
 from PIL import Image, ImageOps
 
+from openai_scorer import make_vision_scorer, scorer_config
+
+log = logging.getLogger(__name__)
+
 UNSPLASH_URL = "https://api.unsplash.com/photos/random"
+SEARCH_URL = "https://api.unsplash.com/search/photos"
+CANDIDATE_POOL = 30
+TOP_K = 5
+SHORTLIST = 8
+MIN_WIDTH = 3000
+TARGET_ASPECT = 16 / 9
+def _default_strategy() -> str:
+    """Choose the pool strategy when the caller/env doesn't force one.
+
+    An explicit UNSPLASH_STRATEGY always wins. Otherwise use "random" (variety)
+    only when a vision scorer is active to gate quality; without one, fall back
+    to "relevant" so we still return iconic, relevance-ordered results rather
+    than a random loosely-matched pool with no quality gate.
+    """
+    env = os.environ.get("UNSPLASH_STRATEGY")
+    if env:
+        return env
+    cfg = scorer_config()
+    gated = cfg.get("backend") == "openai" and cfg.get("url") and cfg.get("model")
+    return "random" if gated else "relevant"
 
 
 class UnsplashError(Exception):
@@ -13,11 +42,39 @@ def build_query(keywords: str) -> str:
     return ",".join(kw.strip() for kw in keywords.split(",") if kw.strip())
 
 
-def fetch_art_image(access_key: str, keywords: str, size=(3840, 2160)) -> bytes:
+def fetch_art_image(access_key: str, keywords: str, size=(3840, 2160),
+                    exclude_ids=None, rng=random, strategy=None):
     query = build_query(keywords)
     if not query:
         raise ValueError("keywords must contain at least one non-empty term")
 
+    strategy = strategy or _default_strategy()
+    chosen = None
+    try:
+        if strategy == "relevant":
+            candidates = search_photos(access_key, query)
+        else:
+            candidates = fetch_random_pool(access_key, query)
+        chosen = choose_photo(candidates, query, exclude_ids=exclude_ids, rng=rng)
+    except UnsplashError as e:
+        log.warning("Unsplash %s pool failed (%r); falling back to single random", strategy, e)
+
+    if chosen is None:
+        log.info("single random fallback used for q=%r", query)
+        chosen = _fetch_random(access_key, query)
+
+    image_url = (chosen.get("urls", {}) or {}).get("full")
+    if not image_url:
+        raise UnsplashError("Chosen photo has no full-resolution URL")
+
+    # Unsplash requires a download trigger whenever a photo is used — on both the
+    # search and random paths. Best-effort.
+    trigger_download(access_key, (chosen.get("links", {}) or {}).get("download_location"))
+    image = _download_and_resize(image_url, size)
+    return image, _photo_meta(chosen)
+
+
+def _fetch_random(access_key: str, query: str) -> dict:
     meta = requests.get(
         UNSPLASH_URL,
         params={"orientation": "landscape", "query": query},
@@ -27,16 +84,168 @@ def fetch_art_image(access_key: str, keywords: str, size=(3840, 2160)) -> bytes:
     if meta.status_code != 200:
         raise UnsplashError(f"Unsplash returned {meta.status_code}: {meta.text[:200]}")
     data = meta.json()
-    try:
-        image_url = data["urls"]["full"]
-    except (KeyError, TypeError):
+    if not isinstance(data, dict) or "urls" not in data:
         raise UnsplashError(f"Unexpected Unsplash response: {str(data)[:200]}")
+    return data
 
+
+def search_photos(access_key: str, query: str, per_page: int = CANDIDATE_POOL) -> list:
+    resp = requests.get(
+        SEARCH_URL,
+        params={
+            "query": query,
+            "orientation": "landscape",
+            "content_filter": "high",
+            "order_by": "relevant",
+            "per_page": per_page,
+        },
+        headers={"Authorization": f"Client-ID {access_key}"},
+        timeout=15,
+    )
+    if resp.status_code != 200:
+        raise UnsplashError(f"Unsplash search returned {resp.status_code}: {resp.text[:200]}")
+    data = resp.json()
+    results = data.get("results", []) if isinstance(data, dict) else []
+    for i, c in enumerate(results):
+        c["_rank"] = i
+    log.info("search q=%r status=%d results=%d", query, resp.status_code, len(results))
+    return results
+
+
+def fetch_random_pool(access_key: str, query: str, count: int = CANDIDATE_POOL) -> list:
+    """Fetch a pool of RANDOM photos matching the query (max 30 per Unsplash).
+
+    Unlike the deterministic relevance search, this returns a different set each
+    call — variety comes from here, quality control from the vision scorer that
+    ranks the pool afterwards."""
+    resp = requests.get(
+        UNSPLASH_URL,
+        params={
+            "query": query,
+            "orientation": "landscape",
+            "content_filter": "high",
+            "count": min(count, 30),
+        },
+        headers={"Authorization": f"Client-ID {access_key}"},
+        timeout=15,
+    )
+    if resp.status_code != 200:
+        raise UnsplashError(f"Unsplash random returned {resp.status_code}: {resp.text[:200]}")
+    data = resp.json()
+    # With count>=1 Unsplash returns a list; be defensive if a single dict comes back.
+    results = data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
+    for i, c in enumerate(results):
+        c["_rank"] = i
+    log.info("random pool q=%r status=%d count=%d", query, resp.status_code, len(results))
+    return results
+
+
+def _meets_min(c: dict) -> bool:
+    w, h = c.get("width", 0) or 0, c.get("height", 0) or 0
+    return w >= MIN_WIDTH and w >= h
+
+
+def heuristic_scorer(c: dict) -> float:
+    rank = c.get("_rank", 0) or 0
+    likes = c.get("likes", 0) or 0
+    w, h = c.get("width", 0) or 0, c.get("height", 0) or 0
+    rank_score = 1.0 / (1 + rank)
+    likes_score = math.log1p(likes)
+    aspect = (w / h) if h else 0
+    aspect_penalty = abs(aspect - TARGET_ASPECT)
+    return rank_score * 2.0 + likes_score * 0.5 - aspect_penalty * 1.0
+
+
+def rank_candidates(candidates, scorer=heuristic_scorer):
+    """Filter to min-resolution-eligible candidates and return
+    [(candidate, score)] sorted by score descending. Scorer is called exactly
+    once per candidate (important when it is an expensive vision call)."""
+    eligible = [c for c in (candidates or []) if _meets_min(c)]
+    ranked = [(c, scorer(c)) for c in eligible]
+    ranked.sort(key=lambda t: t[1], reverse=True)
+    return ranked
+
+
+def pick_from_ranked(ranked, *, exclude_ids=None, top_k=TOP_K, rng=random):
+    """Choose among the top_k highest-scored, avoiding recently-shown ids when
+    possible (falls back to the full top_k if all of them were recent)."""
+    if not ranked:
+        return None
+    exclude = set(exclude_ids or ())
+    top = [c for c, _ in ranked[:top_k]]
+    pool = [c for c in top if c.get("id") not in exclude] or top
+    return rng.choice(pool)
+
+
+def select_best(candidates, exclude_ids=None, scorer=heuristic_scorer, top_k=TOP_K, rng=random):
+    return pick_from_ranked(rank_candidates(candidates, scorer),
+                            exclude_ids=exclude_ids, top_k=top_k, rng=rng)
+
+
+def _photo_meta(c: dict) -> dict:
+    user = c.get("user", {}) or {}
+    links = c.get("links", {}) or {}
+    return {
+        "id": c.get("id"),
+        "description": c.get("description") or c.get("alt_description"),
+        "photographer": user.get("name"),
+        "source_url": links.get("html"),
+    }
+
+
+def trigger_download(access_key: str, download_location) -> None:
+    """Unsplash requires a GET to download_location whenever a photo is used.
+    Best-effort: never break the art update over an attribution ping."""
+    if not download_location:
+        return
+    try:
+        requests.get(download_location, headers={"Authorization": f"Client-ID {access_key}"}, timeout=10)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Unsplash download trigger failed: %r", e)
+
+
+def _download_and_resize(image_url: str, size) -> bytes:
     photo = requests.get(f"{image_url}&w={size[0]}&h={size[1]}", timeout=30)
     if photo.status_code != 200:
         raise UnsplashError(f"Image download failed: {photo.status_code}")
-
     img = ImageOps.fit(Image.open(BytesIO(photo.content)), size, Image.LANCZOS).convert("RGB")
     out = BytesIO()
     img.save(out, format="JPEG", optimize=True, quality=90)
     return out.getvalue()
+
+
+def choose_photo(candidates, destination, *, exclude_ids=None, rng=random, config=None):
+    """Two-stage pick: heuristic pre-filter to a shortlist, then score by the
+    configured backend (vision when set, else heuristic). Logs each funnel stage."""
+    total = len(candidates or [])
+    prelim = rank_candidates(candidates, heuristic_scorer)  # eligible, heuristic-sorted
+    below_min = total - len(prelim)
+    if not prelim:
+        log.info("shortlist empty: 0/%d candidates meet the min-res gate", total)
+        return None
+    shortlist = [c for c, _ in prelim[:SHORTLIST]]
+    beyond = len(prelim) - len(shortlist)
+
+    cfg = config if config is not None else scorer_config()
+    if cfg.get("backend") == "openai" and cfg.get("url") and cfg.get("model"):
+        scorer = make_vision_scorer(destination, cfg)
+        backend = "openai"
+    else:
+        scorer = heuristic_scorer
+        backend = "heuristic"
+
+    # rank_candidates scores each shortlisted photo once; pick_from_ranked then
+    # narrows to TOP_K and rotates among them (do NOT widen top_k to SHORTLIST,
+    # or the score stops affecting the pick).
+    ranked = rank_candidates(shortlist, scorer)
+    scored = ", ".join(f"{c.get('id')} score={s:.2f}" for c, s in ranked)
+    log.info("shortlist(%d/%d) backend=%s: %s (below-min-res=%d, beyond-shortlist=%d)",
+             len(shortlist), total, backend, scored, below_min, beyond)
+
+    chosen = pick_from_ranked(ranked, exclude_ids=exclude_ids, top_k=TOP_K, rng=rng)
+    if chosen is not None:
+        cs = next((s for c, s in ranked if c is chosen), None)
+        log.info("picked %s score=%s (top%d, excluded_recent=%d) [backend=%s]",
+                 chosen.get("id"), f"{cs:.2f}" if cs is not None else "?",
+                 TOP_K, len(set(exclude_ids or ())), backend)
+    return chosen
